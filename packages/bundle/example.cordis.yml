@@ -1,0 +1,20 @@
+- insert:
+    - id: rlm-spawn-provider
+      name: '@deepseek-ai/dsh-subagent-spawn-in-process'
+      config:
+        providerName: rlm-spawn
+
+    - id: rlm-jupyter
+      name: '@deepseek-rlm/dsh-rlm-jupyter'
+      config:
+        artifactRoot: D:/dsh-state/rlm-artifacts
+        managedRuntimeRoot: D:/dsh-state/rlm-runtime
+        subagentProvider: rlm-spawn
+        maxDepth: 1
+        snapshot:
+          policy: after-cell
+        adapters:
+          tools: false
+
+    - id: rlm-ipython-tool
+      name: '@deepseek-rlm/dsh-tool-ipython'

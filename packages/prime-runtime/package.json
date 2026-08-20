@@ -1,0 +1,23 @@
+{
+  "name": "@deepseek-rlm/dsh-rlm-prime-runtime",
+  "version": "0.1.0-preview.0",
+  "description": "Pinned Prime-compatible Python runtime assets for the DSH RLM provider",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/**/*.js",
+    "lib/**/*.d.ts",
+    "python/**",
+    "README.md",
+    "LICENSE"
+  ]
+}

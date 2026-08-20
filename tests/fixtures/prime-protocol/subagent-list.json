@@ -1,0 +1,12 @@
+{
+  "subagents": [
+    {
+      "rlm_child_id": "dsh-child-session-id",
+      "active_session_id": "dsh-child-session-id",
+      "session_id": "dsh-child-session-id",
+      "session_name": "api-reviewer",
+      "session_dir": "/absolute/artifacts/sessions/dsh-child-session-id",
+      "status": "running"
+    }
+  ]
+}

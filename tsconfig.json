@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/rlm" },
+    { "path": "packages/prime-runtime" },
+    { "path": "packages/rlm-jupyter" },
+    { "path": "packages/tool-ipython" },
+    { "path": "packages/bundle" }
+  ]
+}

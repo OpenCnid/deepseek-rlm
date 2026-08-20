@@ -1,0 +1,9 @@
+node_modules
+lib
+coverage
+.dsh-rlm
+artifacts
+vendor/prime-agent-runtime
+SPEC.md
+pnpm-lock.yaml
+patches/deepseek-harness/*.patch

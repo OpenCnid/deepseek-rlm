@@ -1,0 +1,13 @@
+packages:
+  - packages/*
+
+onlyBuiltDependencies:
+  - esbuild
+  - zeromq
+
+minimumReleaseAge: 10080
+
+minimumReleaseAgeExclude:
+  - '@deepseek-ai/*'
+  - '@deepseek-ai/cordis@4.0.1'
+  - '@deepseek-ai/schemastery@3.18.1'

@@ -1,0 +1,10 @@
+{
+  "models": [
+    {
+      "provider": "gateway",
+      "id": "org/model/version",
+      "name": "Scripted Model",
+      "selector": "gateway/org/model/version"
+    }
+  ]
+}

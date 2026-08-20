@@ -1,0 +1,256 @@
+diff --git a/packages/core/agent-loop/src/agent.ts b/packages/core/agent-loop/src/agent.ts
+index 668ef65..c2f9188 100644
+--- a/packages/core/agent-loop/src/agent.ts
++++ b/packages/core/agent-loop/src/agent.ts
+@@ -419,11 +419,13 @@ export class ReactLoopAgent implements Agent {
+     const persistedHeader = session.requestHeader()
+     const persistedConfig = persistedHeader?.config
+     const route = { provider: this.options.provider ?? '', model: this.options.model ?? '' }
+-    const reasoningEffort = persistedConfig?.provider === route.provider
+-      && persistedConfig.model === route.model
+-      && persistedHeader?.adapterDefaults?.reasoningEffort !== true
+-      ? persistedConfig.reasoningEffort
+-      : undefined
++    const reasoningEffort = persistedHeader === undefined
++      ? this.options.reasoningEffort
++      : persistedConfig?.provider === route.provider
++          && persistedConfig.model === route.model
++          && persistedHeader.adapterDefaults?.reasoningEffort !== true
++        ? persistedConfig.reasoningEffort
++        : undefined
+     const maxTokens = this.options.maxTokens
+     const seedConfig = deepFreeze(structuredClone(
+       this.requestHeaderLogged
+diff --git a/packages/core/agent-loop/src/invariant.ts b/packages/core/agent-loop/src/invariant.ts
+index 80fdfba..b647faa 100644
+--- a/packages/core/agent-loop/src/invariant.ts
++++ b/packages/core/agent-loop/src/invariant.ts
+@@ -45,6 +45,7 @@ const install: InvariantInstaller = Object.assign((ctx: Context, fail: Invariant
+       && options.system === header.system
+       && options.temperature === header.config.temperature
+       && options.maxTokens === header.config.maxTokens
++      && options.reasoningEffort === header.config.reasoningEffort
+       && JSON.stringify(options.stop) === JSON.stringify(header.config.stop)
+       && JSON.stringify(options.tools ?? []) === JSON.stringify(header.tools ?? [])
+     if (!headerMatches) {
+diff --git a/packages/core/agent-loop/tests/request-reconstruction.spec.ts b/packages/core/agent-loop/tests/request-reconstruction.spec.ts
+index 287e733..68567c5 100644
+--- a/packages/core/agent-loop/tests/request-reconstruction.spec.ts
++++ b/packages/core/agent-loop/tests/request-reconstruction.spec.ts
+@@ -169,6 +169,30 @@ describe('request stability across the loop', () => {
+     }
+   })
+ 
++  it('applies an AgentOptions reasoning effort on the first request', async () => {
++    const reasoning = {
++      efforts: [
++        { id: ReasoningEffortId('low'), name: 'Low' },
++        { id: ReasoningEffortId('high'), name: 'High' },
++      ],
++    }
++    const adapter = new MockAdapter([textResponse('selected')], reasoning)
++    const ctx = await harness(adapter)
++    const agent = ctx.agentLoop.create(SessionId('first-effort'), {
++      provider: 'mock',
++      model: 'mock',
++      reasoningEffort: ReasoningEffortId('high'),
++    })
++
++    send(agent, 'use the selected effort')
++    await waitForIdle(ctx, agent)
++
++    expect(adapter.requests[0]?.reasoningEffort).toBe(ReasoningEffortId('high'))
++    const header = agent.session.events.find(event => event.type === 'request/header')
++    expect(header?.type === 'request/header' && header.data.header.config.reasoningEffort)
++      .toBe(ReasoningEffortId('high'))
++  })
++
+   it('logs an adapter-owned maxTokens default before dispatch', async () => {
+     const adapter = new MockAdapter([textResponse('bounded')], undefined, 256_000)
+     const ctx = await harness(adapter)
+diff --git a/packages/core/agent/src/runtime-types.ts b/packages/core/agent/src/runtime-types.ts
+index 7d713f8..7b7d30c 100644
+--- a/packages/core/agent/src/runtime-types.ts
++++ b/packages/core/agent/src/runtime-types.ts
+@@ -7,7 +7,7 @@
+ 
+ import type { Context } from '@deepseek-ai/cordis'
+ import type { Scoped } from '@deepseek-ai/dsh-scope'
+-import type { LlmCallConfig, LlmFailure, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'
++import type { LlmCallConfig, LlmFailure, ReasoningEffortId, ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm'
+ import type { AgentCancelCause, Session, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
+ export type { AgentCancelCause } from '@deepseek-ai/dsh-session'
+ import type { Inbox } from './inbox.ts'
+@@ -28,6 +28,8 @@ export interface AgentOptions {
+   model?: string
+   /** Maximum output tokens for each conversation-model request. */
+   maxTokens?: number
++  /** Adapter-owned reasoning effort selected before this Agent's first request. */
++  reasoningEffort?: ReasoningEffortId
+ }
+ 
+ /** Options for {@link Agent.cancel}. */
+diff --git a/packages/subagent/subagent/src/continuation.ts b/packages/subagent/subagent/src/continuation.ts
+index d826efb..4735c54 100644
+--- a/packages/subagent/subagent/src/continuation.ts
++++ b/packages/subagent/subagent/src/continuation.ts
+@@ -412,12 +412,19 @@ export class SubagentContinuationManager {
+     // before a child exists, and the detached value is what reaches the log.
+     const agentProvider = request.agentOptions?.provider ?? parent.options.provider
+     const agentModel = request.agentOptions?.model ?? parent.options.model
++    const childOptions = resolveChildAgentOptions(parent, request.agentOptions, childDepth)
++    await this.validateReasoningEffort(childOptions, spec.signal)
++    spec.signal.throwIfAborted()
++    this.assertAdmitting(parent)
+     const descriptor = snapshotSubagentDescriptor({
+       mode: 'continuable',
+       provider: spec.provider,
+       label: spec.label,
+       ...agentProvider !== undefined ? { agentProvider } : {},
+       ...agentModel !== undefined ? { agentModel } : {},
++      ...childOptions.reasoningEffort !== undefined
++        ? { agentReasoningEffort: childOptions.reasoningEffort }
++        : {},
+       ...request.persona !== undefined ? { persona: request.persona } : {},
+       ...request.toolFilter !== undefined ? { toolFilter: request.toolFilter } : {},
+     })
+@@ -441,7 +448,7 @@ export class SubagentContinuationManager {
+         provider: spec.provider,
+         parent,
+         create: { seed, meta: childSessionMeta(parent, childDepth, lineageSeedLength), delegatedPolicies },
+-        agentOptions: resolveChildAgentOptions(parent, request.agentOptions, childDepth),
++        agentOptions: childOptions,
+         composition: { persona: request.persona, toolFilter: request.toolFilter },
+         signal: spec.signal,
+       })
+@@ -919,6 +926,9 @@ export class SubagentContinuationManager {
+         agentOptions: {
+           ...descriptor.agentProvider !== undefined ? { provider: descriptor.agentProvider } : {},
+           ...descriptor.agentModel !== undefined ? { model: descriptor.agentModel } : {},
++          ...descriptor.agentReasoningEffort !== undefined
++            ? { reasoningEffort: descriptor.agentReasoningEffort }
++            : {},
+         },
+         composition: { persona: descriptor.persona, toolFilter: descriptor.toolFilter },
+         signal: options.signal,
+@@ -931,6 +941,28 @@ export class SubagentContinuationManager {
+     return this.submitMaterialized(activation, content, options.source, parent, options.signal)
+   }
+ 
++  /** Validate a selected effort against the exact route before child publication. */
++  private async validateReasoningEffort(options: AgentOptions, signal: AbortSignal): Promise<void> {
++    if (options.reasoningEffort === undefined) return
++    if (options.provider === undefined || options.model === undefined) {
++      throw new SubagentError(
++        'a continuable child reasoning effort requires an exact provider and model',
++        'INVALID_ARGUMENT',
++      )
++    }
++    const llm = this.ctx.get('llm')
++    if (llm === undefined) {
++      throw new SubagentError('continuable reasoning requires the llm service', 'CONTINUATION_UNAVAILABLE')
++    }
++    const info = await llm.resolveModelInfo(options.provider, options.model, signal)
++    if (!info.reasoning?.efforts.some(effort => effort.id === options.reasoningEffort)) {
++      throw new SubagentError(
++        `reasoning effort "${options.reasoningEffort}" is not supported by ${options.provider}/${options.model}`,
++        'INVALID_ARGUMENT',
++      )
++    }
++  }
++
+   /**
+    * Submit to a freshly materialized Activation or roll it back completely.
+    * @param activation - the just-published Activation to admit or release.
+diff --git a/packages/subagent/subagent/src/descriptor.ts b/packages/subagent/subagent/src/descriptor.ts
+index 6d9dede..15802cc 100644
+--- a/packages/subagent/subagent/src/descriptor.ts
++++ b/packages/subagent/subagent/src/descriptor.ts
+@@ -23,6 +23,7 @@
+ 
+ import { snapshotJsonValue } from '@deepseek-ai/dsh-session'
+ import type { SessionEvent } from '@deepseek-ai/dsh-session'
++import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+ import type { ToolRestriction } from '@deepseek-ai/dsh-tools'
+ 
+ declare module '@deepseek-ai/dsh-session/types' {
+@@ -44,7 +45,7 @@ declare module '@deepseek-ai/dsh-session/types' {
+  * Supporting another composition input is a deliberate version change, never
+  * an implicit extra field.
+  */
+-export const SUBAGENT_DESCRIPTOR_VERSION = 2
++export const SUBAGENT_DESCRIPTOR_VERSION = 3
+ 
+ /** Fields shared by every supported `subagent/descriptor` payload. */
+ interface SubagentDescriptorBase {
+@@ -76,6 +77,8 @@ export interface ContinuableSubagentDescriptorData extends SubagentDescriptorBas
+   readonly agentProvider?: string
+   /** Resolved child `agentOptions.model`, when one was declared. */
+   readonly agentModel?: string
++  /** Validated child reasoning effort, applied before the first request and on resume. */
++  readonly agentReasoningEffort?: ReasoningEffortId
+   /** Per-child persona that shadows the deployment persona on resume. */
+   readonly persona?: string
+   /** Child tool scoping reapplied on resume. */
+@@ -111,6 +114,8 @@ export interface ContinuableSubagentDescriptorInput extends SubagentDescriptorIn
+   readonly agentProvider?: string
+   /** Requested child `agentOptions.model`. */
+   readonly agentModel?: string
++  /** Requested child reasoning effort, already validated against the exact route. */
++  readonly agentReasoningEffort?: ReasoningEffortId
+   /** Requested per-child persona. */
+   readonly persona?: string
+   /** Requested child tool scoping. */
+@@ -133,6 +138,7 @@ const CONTINUABLE_DESCRIPTOR_KEYS = new Set([
+   ...DESCRIPTOR_BASE_KEYS,
+   'agentProvider',
+   'agentModel',
++  'agentReasoningEffort',
+   'persona',
+   'toolFilter',
+ ])
+@@ -231,6 +237,10 @@ function parseSubagentDescriptor(value: unknown): SubagentDescriptorData | undef
+   }
+   const agentProvider = optionalString(value, 'agentProvider')
+   const agentModel = optionalString(value, 'agentModel')
++  const rawAgentReasoningEffort = optionalString(value, 'agentReasoningEffort')
++  const agentReasoningEffort = rawAgentReasoningEffort === undefined
++    ? undefined
++    : ReasoningEffortId(rawAgentReasoningEffort)
+   const persona = optionalString(value, 'persona')
+   const toolFilter = Object.hasOwn(value, 'toolFilter')
+     ? parseToolFilter(value['toolFilter'])
+@@ -242,6 +252,7 @@ function parseSubagentDescriptor(value: unknown): SubagentDescriptorData | undef
+     label,
+     ...agentProvider !== undefined ? { agentProvider } : {},
+     ...agentModel !== undefined ? { agentModel } : {},
++    ...agentReasoningEffort !== undefined ? { agentReasoningEffort } : {},
+     ...persona !== undefined ? { persona } : {},
+     ...toolFilter !== undefined ? { toolFilter } : {},
+   }
+@@ -283,6 +294,9 @@ export function snapshotSubagentDescriptor(input: SubagentDescriptorInput): Suba
+       label: input.label,
+       ...input.agentProvider !== undefined ? { agentProvider: input.agentProvider } : {},
+       ...input.agentModel !== undefined ? { agentModel: input.agentModel } : {},
++      ...input.agentReasoningEffort !== undefined
++        ? { agentReasoningEffort: input.agentReasoningEffort }
++        : {},
+       ...input.persona !== undefined ? { persona: input.persona } : {},
+       ...input.toolFilter !== undefined ? { toolFilter: input.toolFilter } : {},
+     }
+diff --git a/packages/subagent/subagent/src/index.ts b/packages/subagent/subagent/src/index.ts
+index fe270f1..7af9f44 100644
+--- a/packages/subagent/subagent/src/index.ts
++++ b/packages/subagent/subagent/src/index.ts
+@@ -213,6 +213,11 @@ export class SubagentRuntime extends Service {
+     return this.requireContinuations().startContinuable(spec)
+   }
+ 
++  /** Runtime feature probe for consumers that must not let rc.7 ignore an effort. */
++  supportsContinuableReasoningEffort(): boolean {
++    return true
++  }
++
+   /**
+    * Deliver one later message to a continuable child as its next FIFO turn. A
+    * resident child's Agent inbox accepts it directly (waking a `waiting`

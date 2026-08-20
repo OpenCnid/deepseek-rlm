@@ -1,0 +1,6 @@
+{
+  "rlm_child_id": "dsh-child-session-id",
+  "name": "api-reviewer",
+  "session_dir": "/absolute/artifacts/sessions/dsh-child-session-id",
+  "model": "local/scripted"
+}
