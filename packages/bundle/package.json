@@ -11,13 +11,17 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./spawn-provider": {
+      "types": "./lib/spawn-provider.d.ts",
+      "default": "./lib/spawn-provider.js"
+    },
     "./dsh.bundle.patch": "./dsh.bundle.patch",
     "./example.cordis.yml": "./example.cordis.yml",
     "./package.json": "./package.json"
   },
   "files": [
-    "lib/index.js",
-    "lib/index.d.ts",
+    "lib/**/*.js",
+    "lib/**/*.d.ts",
     "dsh.bundle.patch",
     "example.cordis.yml",
     "README.md",
@@ -32,7 +36,9 @@
     "@deepseek-rlm/dsh-rlm": "workspace:*",
     "@deepseek-rlm/dsh-rlm-prime-runtime": "workspace:*",
     "@deepseek-rlm/dsh-rlm-jupyter": "workspace:*",
-    "@deepseek-rlm/dsh-tool-ipython": "workspace:*",
+    "@deepseek-rlm/dsh-tool-ipython": "workspace:*"
+  },
+  "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/dsh-agent": "0.1.0-rc.7",
     "@deepseek-ai/dsh-llm": "0.1.0-rc.7",
@@ -40,8 +46,6 @@
     "@deepseek-ai/dsh-subagent": "0.1.0-rc.7",
     "@deepseek-ai/dsh-subagent-spawn-in-process": "0.1.0-rc.7",
     "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
-    "@deepseek-ai/schemastery": "3.18.1",
-    "zeromq": "6.1.2"
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.7"
   }
 }
