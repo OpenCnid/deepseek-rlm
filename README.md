@@ -74,6 +74,8 @@ x + 1  # 42
 
 Native recursion returns at DSH inbox admission, not at child completion:
 
+When `model` is omitted, the child inherits the exact provider/model recorded in the parent session's active request header. The parent Agent's construction defaults are used only before its first request header exists; an active Web model selection is never replaced by those stale defaults. `thinking` remains explicit and is not inherited when omitted.
+
 ```python
 worker = await rlm(
     "Investigate the failing test and explicitly report the cause.",
