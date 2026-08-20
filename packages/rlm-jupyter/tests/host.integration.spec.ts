@@ -132,6 +132,17 @@ class BlockingAdapter extends LlmAdapter {
   }
 }
 
+class RoutedBlockingAdapter extends BlockingAdapter {
+  override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    const id = provider === 'route-a' ? 'model-a' : 'model-b'
+    return Promise.resolve([{ provider, id, name: `Scripted ${provider}` }])
+  }
+
+  override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+    return Promise.resolve({ provider, id: model, name: `Scripted ${provider}` })
+  }
+}
+
 /** Node-20-safe in-memory persistence seam for the real continuation manager. */
 class MemoryPersistence extends SessionPersistence {
   static inject = ['sessions']
@@ -297,6 +308,9 @@ describe('native DSH continuation host bridge', () => {
       ),
     ).rejects.toMatchObject({ code: 'MODEL_UNAVAILABLE' })
 
+    // A direct bridge caller has no active request header yet, so the
+    // documented pre-request fallback deliberately uses Agent options.
+    expect(parent.session.requestHeader()).toBeUndefined()
     const admission = bridge.dispatch(
       parent,
       'rlm.run',
@@ -352,6 +366,75 @@ describe('native DSH continuation host bridge', () => {
     expect(
       child!.session.events.filter((event) => event.type === 'user/message').length,
     ).toBeGreaterThanOrEqual(2)
+  }, 30_000)
+
+  it('inherits the active request route instead of stale Agent construction defaults', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-rlm-host-route-'))
+    roots.push(root)
+    const ctx = new Context()
+    contexts.push(ctx)
+    await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(SessionProjectionRegistry)
+    await ctx.plugin(MemoryPersistence)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    await ctx.plugin(SubagentRuntime)
+    await ctx.plugin(spawnProvider, { providerName: 'rlm-spawn' })
+    const adapter = new RoutedBlockingAdapter()
+    ctx.llm.registerAdapter(['route-a', 'route-b'], adapter)
+    const parent = ctx.agentLoop.create(SessionId('route-parent'), {
+      provider: 'route-a',
+      model: 'model-a',
+    })
+    parent.session.append('request/header', {
+      header: { config: { provider: 'route-b', model: 'model-b' } },
+      reason: 'initial',
+    })
+    expect(parent.options).toMatchObject({ provider: 'route-a', model: 'model-a' })
+    expect(parent.session.requestHeader()?.config).toMatchObject({
+      provider: 'route-b',
+      model: 'model-b',
+    })
+    const bridge = new HostBridge(
+      ctx,
+      resolveConfig({
+        artifactRoot: join(root, 'artifacts'),
+        managedRuntimeRoot: join(root, 'runtime'),
+        subagentProvider: 'rlm-spawn',
+        maxDepth: 1,
+      }),
+    )
+
+    let child: ReturnType<typeof ctx.agents.get>
+    try {
+      const handle = await bridge.dispatch(
+        parent,
+        'rlm.run',
+        { prompt: 'use the active route', kwargs: { name: 'worker' } },
+        request(),
+      )
+      expect(handle).toMatchObject({ name: 'worker', model: 'route-b/model-b' })
+
+      child = ctx.agents.get(SessionId(handle.rlm_child_id as string))
+      expect(child).toBeDefined()
+      expect(
+        child?.session.events.find((event) => event.type === 'subagent/descriptor')?.data,
+      ).toMatchObject({
+        mode: 'continuable',
+        provider: 'rlm-spawn',
+        label: 'worker',
+        agentProvider: 'route-b',
+        agentModel: 'model-b',
+      })
+      await expect
+        .poll(() => child?.session.requestHeader()?.config)
+        .toMatchObject({ provider: 'route-b', model: 'model-b' })
+      const firstRequest = child?.session.events.find((event) => event.type === 'request/header')
+      expect(firstRequest?.data.header.config.provider).toBe('route-b')
+      expect(firstRequest?.data.header.config.model).toBe('model-b')
+    } finally {
+      adapter.release()
+    }
+    await child?.whenIdle()
   }, 30_000)
 
   it('admits concurrent children and native recursion only within absolute depth policy', async () => {

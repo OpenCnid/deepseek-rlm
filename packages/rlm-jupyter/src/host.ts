@@ -223,14 +223,19 @@ export class HostBridge {
     let provider: string
     let model: string
     if (selector === undefined) {
-      if (agent.options.provider === undefined || agent.options.model === undefined) {
+      // During a live tool step, the latest request header is the exact route
+      // after Agent-scoped selection middleware. Construction options are only
+      // authoritative before the AgentLoop has logged its first request.
+      const active = agent.session.requestHeader()?.config
+      const inherited = active ?? agent.options
+      if (inherited.provider === undefined || inherited.model === undefined) {
         throw new HostRequestError(
           'parent agent has no complete model selection',
           'MODEL_UNAVAILABLE',
         )
       }
-      provider = agent.options.provider
-      model = agent.options.model
+      provider = inherited.provider
+      model = inherited.model
     } else {
       const providers = this.ctx.llm
         .listProviders()
