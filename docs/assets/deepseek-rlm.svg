@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title description">
+  <title id="title">DeepSeek RLM</title>
+  <desc id="description">Native persistent Python and recursive subagents for DeepSeek Harness, with DSH remaining the sole orchestrator.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#071321" />
+      <stop offset="0.55" stop-color="#0b1d32" />
+      <stop offset="1" stop-color="#102b3c" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#36d6ff" />
+      <stop offset="1" stop-color="#6ef2b3" />
+    </linearGradient>
+    <radialGradient id="glow">
+      <stop offset="0" stop-color="#34d5ff" stop-opacity="0.2" />
+      <stop offset="1" stop-color="#34d5ff" stop-opacity="0" />
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#83b5c7" stroke-opacity="0.08" stroke-width="1" />
+    </pattern>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000814" flood-opacity="0.45" />
+    </filter>
+  </defs>
+
+  <rect width="1200" height="360" rx="24" fill="url(#background)" />
+  <rect width="1200" height="360" rx="24" fill="url(#grid)" />
+  <circle cx="1015" cy="160" r="260" fill="url(#glow)" />
+
+  <g font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <g transform="translate(64 58)">
+      <rect width="260" height="30" rx="15" fill="#102f43" stroke="#36d6ff" stroke-opacity="0.48" />
+      <circle cx="17" cy="15" r="5" fill="#6ef2b3" />
+      <text x="32" y="20" fill="#bfefff" font-size="13" font-weight="700" letter-spacing="1.5">DEEPSEEK HARNESS PLUGIN</text>
+
+      <text x="0" y="105" fill="#f4fbff" font-size="72" font-weight="800" letter-spacing="-2.5">DeepSeek</text>
+      <text x="350" y="105" fill="url(#accent)" font-size="72" font-weight="800" letter-spacing="-2.5">RLM</text>
+
+      <text x="2" y="151" fill="#b9ced9" font-size="21" font-weight="500">Persistent Python state + native recursive subagents</text>
+      <text x="2" y="184" fill="#86a9b9" font-size="17">DeepSeek Harness remains the sole agent loop and orchestrator.</text>
+
+      <g transform="translate(0 215)" font-size="13" font-weight="650" letter-spacing="0.4">
+        <g>
+          <rect width="146" height="34" rx="17" fill="#122c3e" stroke="#2d819d" />
+          <text x="73" y="22" text-anchor="middle" fill="#c8f3ff">ctx.rlm</text>
+        </g>
+        <g transform="translate(158)">
+          <rect width="146" height="34" rx="17" fill="#122c3e" stroke="#2d819d" />
+          <text x="73" y="22" text-anchor="middle" fill="#c8f3ff">IPython / Jupyter</text>
+        </g>
+        <g transform="translate(316)">
+          <rect width="146" height="34" rx="17" fill="#122c3e" stroke="#2d819d" />
+          <text x="73" y="22" text-anchor="middle" fill="#c8f3ff">Snapshots</text>
+        </g>
+      </g>
+    </g>
+
+    <g transform="translate(824 52)" filter="url(#shadow)">
+      <path d="M142 0 265 71v142l-123 71L19 213V71Z" fill="#0a1928" stroke="url(#accent)" stroke-width="2" />
+      <path d="M142 26 241 83v116l-99 58-99-58V83Z" fill="#0e2638" stroke="#3f7d92" stroke-opacity="0.8" />
+
+      <g transform="translate(80 99)">
+        <rect width="124" height="58" rx="14" fill="#12364b" stroke="#52def9" />
+        <text x="62" y="25" text-anchor="middle" fill="#e9fbff" font-size="18" font-weight="800">DSH</text>
+        <text x="62" y="43" text-anchor="middle" fill="#8fc5d4" font-size="11" font-weight="650" letter-spacing="1">ORCHESTRATOR</text>
+      </g>
+
+      <g fill="#0d2c3d" stroke="#6ef2b3">
+        <circle cx="142" cy="55" r="29" />
+        <circle cx="70" cy="207" r="29" />
+        <circle cx="214" cy="207" r="29" />
+      </g>
+      <g text-anchor="middle" fill="#d9fff0" font-size="11" font-weight="700">
+        <text x="142" y="52">AGENT</text>
+        <text x="142" y="66">LOOP</text>
+        <text x="70" y="204">PERSISTENT</text>
+        <text x="70" y="218">PYTHON</text>
+        <text x="214" y="204">CHILD</text>
+        <text x="214" y="218">AGENTS</text>
+      </g>
+
+      <g fill="none" stroke="#58dfea" stroke-width="2" stroke-linecap="round" stroke-dasharray="4 6" opacity="0.85">
+        <path d="M142 84v15" />
+        <path d="M105 154 83 181" />
+        <path d="m179 154 22 27" />
+      </g>
+      <g fill="#58dfea">
+        <path d="m137 94 5 7 5-7Z" />
+        <path d="m82 174 1 9 8-4Z" />
+        <path d="m193 179 8 4 1-9Z" />
+      </g>
+    </g>
+  </g>
+
+  <rect x="1" y="1" width="1198" height="358" rx="23" fill="none" stroke="#69dff4" stroke-opacity="0.18" stroke-width="2" />
+</svg>

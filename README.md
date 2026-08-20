@@ -1,6 +1,12 @@
+<p align="center">
+  <img src="./docs/assets/deepseek-rlm.svg" alt="DeepSeek RLM — persistent Python state and native recursive subagents for DeepSeek Harness" width="100%" />
+</p>
+
 # DeepSeek RLM
 
 DeepSeek RLM adds one persistent, authenticated IPython kernel to each DeepSeek Harness agent and exposes Prime-compatible recursive-language-model calls from Python. DeepSeek Harness remains the only harness: it creates and drives every parent and child agent, owns model credentials and policy, records tool/session history, and enforces lineage, depth, cancellation, and persistence.
+
+> **What “RLM” means here:** a Recursive Language Model workflow gives an agent durable Python working memory and lets it delegate focused work to native DeepSeek Harness subagents. This repository is a plugin bundle for DeepSeek Harness (DSH), not a second harness and not a DeepSeek model.
 
 The repository implements the complete core path described by [`SPEC.md`](./SPEC.md):
 
