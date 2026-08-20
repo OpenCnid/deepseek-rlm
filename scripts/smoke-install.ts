@@ -53,6 +53,7 @@ try {
         `await import('@deepseek-rlm/dsh-rlm-prime-runtime')`,
         `await import('@deepseek-rlm/dsh-rlm-jupyter')`,
         `await import('@deepseek-rlm/dsh-tool-ipython')`,
+        `await import('@deepseek-rlm/dsh-rlm-bundle/spawn-provider')`,
         `const bundle = await import('@deepseek-rlm/dsh-rlm-bundle')`,
         `if (bundle.bundleVersion !== '0.1.0-preview.0') process.exit(1)`,
       ].join(';'),

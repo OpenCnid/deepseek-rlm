@@ -1,14 +1,15 @@
-# Applied after the pinned DSH base/profile bundle. Ordering is intentional:
-# the named continuable provider must exist before the RLM service validates it,
-# and the tool consumes ctx.rlm only after the provider publishes the service.
+# Applied after the pinned DSH base/profile bundle. Loader siblings activate
+# concurrently: the bundle wrapper publishes rlmSpawnReady only after the named
+# native provider commits, and the Jupyter row declares that hard dependency.
 - insert:
     - id: rlm-spawn-provider
-      name: '@deepseek-ai/dsh-subagent-spawn-in-process'
+      name: '@deepseek-rlm/dsh-rlm-bundle/spawn-provider'
       config:
         providerName: rlm-spawn
 
     - id: rlm-jupyter
       name: '@deepseek-rlm/dsh-rlm-jupyter'
+      inject: [rlmSpawnReady]
       config:
         subagentProvider: rlm-spawn
         maxDepth: 1

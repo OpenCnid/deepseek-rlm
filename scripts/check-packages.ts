@@ -35,11 +35,33 @@ const bundle = JSON.parse(
 ) as PackageManifest
 const patch = await readFile(resolve(root, 'packages/bundle/dsh.bundle.patch'), 'utf8')
 for (const name of [
-  '@deepseek-ai/dsh-subagent-spawn-in-process',
+  '@deepseek-rlm/dsh-rlm-bundle/spawn-provider',
   '@deepseek-rlm/dsh-rlm-jupyter',
   '@deepseek-rlm/dsh-tool-ipython',
 ]) {
   if (!patch.includes(`name: '${name}'`)) throw new Error(`bundle patch does not mount ${name}`)
-  if (bundle.dependencies?.[name] === undefined) throw new Error(`bundle does not declare ${name}`)
 }
+for (const dependency of ['@deepseek-rlm/dsh-rlm-jupyter', '@deepseek-rlm/dsh-tool-ipython']) {
+  if (bundle.dependencies?.[dependency] === undefined)
+    throw new Error(`bundle does not declare ${dependency}`)
+}
+for (const dependency of [
+  '@deepseek-ai/cordis',
+  '@deepseek-ai/dsh-agent',
+  '@deepseek-ai/dsh-llm',
+  '@deepseek-ai/dsh-session',
+  '@deepseek-ai/dsh-subagent',
+  '@deepseek-ai/dsh-subagent-spawn-in-process',
+  '@deepseek-ai/dsh-system-prompt',
+  '@deepseek-ai/dsh-tools',
+]) {
+  if (bundle.peerDependencies?.[dependency] === undefined)
+    throw new Error(`bundle does not declare host peer ${dependency}`)
+  if (bundle.dependencies?.[dependency] !== undefined)
+    throw new Error(
+      `bundle must not shadow the DSH installation with host dependency ${dependency}`,
+    )
+}
+if (!patch.includes('inject: [rlmSpawnReady]'))
+  throw new Error('bundle Jupyter row does not inject rlmSpawnReady')
 console.log(`package check ok: ${packageDirs.length} packages and bundle closure`)

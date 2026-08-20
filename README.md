@@ -44,6 +44,10 @@ dsh --profile <profile> --dump-default-config
 
 The required override keys are `@deepseek-rlm/dsh-rlm`, `@deepseek-rlm/dsh-rlm-prime-runtime`, `@deepseek-rlm/dsh-rlm-jupyter`, and `@deepseek-rlm/dsh-tool-ipython`. They make pnpm resolve internal package edges to the sibling tarballs instead of the public registry. The DSH CLI recognizes the bundle’s `dsh.bundle` manifest and appends it after the existing profile bundles. Published packages do not need local overrides. Override the absolute artifact/runtime roots with the profile’s `cordis.patch.yml`; [`packages/bundle/example.cordis.yml`](./packages/bundle/example.cordis.yml) is a complete Windows example.
 
+Keep the profile-created `nodeLinker: hoisted` and `autoInstallPeers: false` settings. The bundle declares Cordis and DSH host packages as peers so Node resolves them from DSH's installation-managed `profiles/node_modules` fallback. Installing registry copies of those host packages into the profile can split service symbols or replace the three patched seams with unpatched rc.7 implementations; the package check rejects such host dependencies in the bundle.
+
+The bundle does not rely on YAML row order. Its `rlm-spawn-provider` wrapper publishes `rlmSpawnReady` only after native `rlm-spawn` registration commits, and the existing `rlm-jupyter` row injects that service before validating the exact configured provider. A missing or disabled provider therefore remains a visible startup error rather than a timing race or a substituted backend.
+
 Full parity on rc.7 requires applying these patches, in order, to the exact DSH source revision and rebuilding its packages:
 
 ```text

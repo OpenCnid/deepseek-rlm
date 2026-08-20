@@ -1,11 +1,12 @@
 - insert:
     - id: rlm-spawn-provider
-      name: '@deepseek-ai/dsh-subagent-spawn-in-process'
+      name: '@deepseek-rlm/dsh-rlm-bundle/spawn-provider'
       config:
         providerName: rlm-spawn
 
     - id: rlm-jupyter
       name: '@deepseek-rlm/dsh-rlm-jupyter'
+      inject: [rlmSpawnReady]
       config:
         artifactRoot: D:/dsh-state/rlm-artifacts
         managedRuntimeRoot: D:/dsh-state/rlm-runtime
