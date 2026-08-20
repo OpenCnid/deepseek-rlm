@@ -29,7 +29,7 @@ export class RlmSpawnReady extends Service {
 export const name = 'rlm-spawn-provider'
 export const inject = ['subagents']
 export type Config = SpawnProviderConfig
-export const Config = SpawnProviderConfigSchema
+export const Config: typeof SpawnProviderConfigSchema = SpawnProviderConfigSchema
 
 /** Register the native DSH provider, then publish the bundle readiness edge. */
 export function apply(ctx: Context, config: Config): void {
