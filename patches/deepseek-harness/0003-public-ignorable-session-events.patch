@@ -1,0 +1,84 @@
+diff --git a/packages/core/session/src/index.ts b/packages/core/session/src/index.ts
+index 2d82a88..c82dcd9 100644
+--- a/packages/core/session/src/index.ts
++++ b/packages/core/session/src/index.ts
+@@ -606,7 +606,35 @@ export class Session {
+     data: SessionEventMap[T],
+     ...opts: T extends SurfaceEventType ? [opts: SurfaceIntent] : []
+   ): SessionEvent<T> {
+-    const surfaceOpts: SurfaceIntent | undefined = opts[0]
++    return this.appendEvent(type, data, false, opts[0])
++  }
++
++  /**
++   * Append one informational, non-surface event that older harness builds may
++   * safely skip when they do not recognize its type. This is the public
++   * downstream-plugin vocabulary seam: module augmentation supplies the typed
++   * payload while the persisted envelope carries the existing forward-
++   * compatibility marker. Required or model-surface events must use
++   * {@link append} instead.
++   *
++   * @param type - a non-surface event type supplied by this build or a plugin.
++   * @param data - lossless-JSON event payload.
++   * @returns the committed immutable event with `ignorable: true`.
++   */
++  appendIgnorable<T extends Exclude<SessionEventType, SurfaceEventType>>(
++    type: T,
++    data: SessionEventMap[T],
++  ): SessionEvent<T> {
++    return this.appendEvent(type, data, true)
++  }
++
++  /** Shared acceptance and publication path for required and ignorable events. */
++  private appendEvent<T extends SessionEventType>(
++    type: T,
++    data: SessionEventMap[T],
++    ignorable: boolean,
++    surfaceOpts?: SurfaceIntent,
++  ): SessionEvent<T> {
+     const surfaceMetadata = {
+       ...surfaceOpts?.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: surfaceOpts.sourceEventSeqs },
+       ...surfaceOpts?.surfaceOp === undefined ? {} : { surfaceOp: surfaceOpts.surfaceOp },
+@@ -629,6 +657,7 @@ export class Session {
+       seq: this.log.length,
+       time: Date.now(),
+       data: dataSnapshot,
++      ...ignorable ? { ignorable: true as const } : {},
+       ...(surfaceMetadataSnapshot as { surfaceOp?: unknown; sourceEventSeqs?: unknown }),
+     } as unknown as SessionEvent<T>)
+     this.surfaceManager.validateNext(event as SessionEvent)
+diff --git a/packages/core/session/tests/session.spec.ts b/packages/core/session/tests/session.spec.ts
+index 47453ea..509e0a6 100644
+--- a/packages/core/session/tests/session.spec.ts
++++ b/packages/core/session/tests/session.spec.ts
+@@ -11,7 +11,30 @@ import SessionStore, {
+ } from '@deepseek-ai/dsh-session'
+ import type { CreateSessionOptions, SessionEventType, SessionHeader, SessionSurface, TodoItem } from '@deepseek-ai/dsh-session'
+ 
++declare module '@deepseek-ai/dsh-session/types' {
++  interface SessionEventMap {
++    'plugin/test-notice': { readonly version: 1; readonly detail: string }
++  }
++}
++
+ describe('Session', () => {
++  it('marks downstream informational events ignorable and restores them safely', () => {
++    const session = Session.create(SessionId('plugin-event'))
++    const event = session.appendIgnorable('plugin/test-notice', { version: 1, detail: 'ready' })
++    expect(event).toMatchObject({
++      type: 'plugin/test-notice',
++      data: { version: 1, detail: 'ready' },
++      ignorable: true,
++    })
++
++    const restored = Session.fromRestore(
++      session.id,
++      structuredClone(session.events),
++      structuredClone(session.header),
++    )
++    expect(restored.events[0]).toEqual(event)
++  })
++
+   it('exposes one stable readonly surface view', () => {
+     const session = Session.create(SessionId('surface-view'))
+     const surface = session.surface

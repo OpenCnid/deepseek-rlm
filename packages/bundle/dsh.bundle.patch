@@ -1,0 +1,17 @@
+# Applied after the pinned DSH base/profile bundle. Ordering is intentional:
+# the named continuable provider must exist before the RLM service validates it,
+# and the tool consumes ctx.rlm only after the provider publishes the service.
+- insert:
+    - id: rlm-spawn-provider
+      name: '@deepseek-ai/dsh-subagent-spawn-in-process'
+      config:
+        providerName: rlm-spawn
+
+    - id: rlm-jupyter
+      name: '@deepseek-rlm/dsh-rlm-jupyter'
+      config:
+        subagentProvider: rlm-spawn
+        maxDepth: 1
+
+    - id: rlm-ipython-tool
+      name: '@deepseek-rlm/dsh-tool-ipython'

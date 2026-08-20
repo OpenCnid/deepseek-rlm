@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/PrimeIntellect-ai/prime-agent.git",
+  "revision": "f8f0036cc2da1a640aad990ae8dcb7c4820ce32e",
+  "originalPath": "prime-agent-runtime",
+  "localChanges": false,
+  "files": {
+    "vendor/prime-agent-runtime/LICENSE.upstream": "b288615fb31dc504623582fb790a28e6d86bc2f5c1396845af555e43386da5a0",
+    "vendor/prime-agent-runtime/pyproject.toml": "95e05b16faaa7ff9c6d8ece46d83867ca1d7e72a69f8fad162ec4c6da237885d",
+    "vendor/prime-agent-runtime/src/rlm/__init__.py": "c12285a6f73aaa141a04e19d10fb8a4a0c2a0ca430e08c3b6d24d88e5fac5be1",
+    "vendor/prime-agent-runtime/src/rlm/harness.py": "de43f023279bd661993f6dd27d9e97cb670d10439c861c17b381962bb48d9e8e",
+    "vendor/prime-agent-runtime/src/rlm/mcp_base.py": "9aaf08bbd3c46003438e3a9e7230c01d733368c82eb106eab953317b1d1f21e9",
+    "vendor/prime-agent-runtime/src/rlm/skill.py": "23f1ecba340b24a4e75880437f33fa72fbd510a2da496a87a9d033fc66b92a7a",
+    "vendor/prime-agent-runtime/test/test_agent_message_skill.py": "bb7ef35865a6a053264811cc047f6e594e7d9a5e6c06af1dde903f85799b17a9",
+    "vendor/prime-agent-runtime/test/test_harness.py": "293a587a2d38938e12980ac63452ce549de32cd63220e4940224cd21f1d1070d",
+    "vendor/prime-agent-runtime/test/test_mcp_base.py": "bd07abc759fdf486babd5693976b3b9c53b3c3f15977774e2cb96b59d0fa3e37",
+    "vendor/prime-agent-runtime/test/test_subagent_registry.py": "5ab66c4e03126486ba9cde4f77b12491412839a13e5ac81f6d0dd0093a7e5f81"
+  }
+}

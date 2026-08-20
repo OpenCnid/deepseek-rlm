@@ -1,0 +1,428 @@
+diff --git a/packages/subagent/subagent/src/continuation.ts b/packages/subagent/subagent/src/continuation.ts
+index d826efb..8207c56 100644
+--- a/packages/subagent/subagent/src/continuation.ts
++++ b/packages/subagent/subagent/src/continuation.ts
+@@ -53,6 +53,8 @@ import type { ContinuableCreateRequest, ContinuableCreateSpec, SubagentResult, S
+ import type { ActivationObserver, ActivationTerminal } from './lifecycle.ts'
+ import { SubagentError } from './error.ts'
+ import type SubagentActivationSetupRegistry from './activation-setup-registry.ts'
++import { foldSubagentDeletion } from './deletion.ts'
++import type { ContinuableDeleteResult, SubagentDeletedData } from './deletion.ts'
+ 
+ /** Attribution for a model coordinator's follow-up to one of its children. */
+ export interface CoordinatorMessageSource {
+@@ -480,6 +482,7 @@ export class SubagentContinuationManager {
+     options: SubagentFollowupOptions,
+   ): Promise<MessageId> {
+     this.assertAdmitting(parent)
++    this.assertNotDeleted(parent, childId)
+     while (true) {
+       const live = await this.locks.run(childId, async () => {
+         const activation = this.activations.get(childId)
+@@ -504,6 +507,81 @@ export class SubagentContinuationManager {
+     }
+   }
+ 
++  /**
++   * Permanently revoke a continuable child address under its exact live direct
++   * parent. The parent-owned tombstone is flushed before a resident Activation
++   * is released, so every later delivery observes deletion even when teardown
++   * fails. Retained child session media is intentionally not removed.
++   */
++  async deleteContinuable(
++    parent: Agent,
++    childId: SessionId,
++    signal: AbortSignal,
++  ): Promise<ContinuableDeleteResult> {
++    signal.throwIfAborted()
++    this.assertAdmitting(parent)
++    this.requirePersistence()
++    return this.locks.run(childId, async () => {
++      signal.throwIfAborted()
++      this.assertAdmitting(parent)
++      const existing = foldSubagentDeletion(parent.session.events, childId)
++      const activation = this.activations.get(childId)
++      if (existing !== undefined) {
++        if (activation !== undefined) await this.dispose(activation)
++        return { ...existing, alreadyDeleted: true }
++      }
++
++      let label: string
++      if (activation !== undefined) {
++        this.authorizeLineage(
++          parent,
++          childId,
++          activation.handle.agent.session.header.parentSession,
++        )
++        const descriptor = foldSubagentDescriptor(
++          activation.handle.agent.session.events.slice(
++            activation.handle.agent.session.header.seedLength ?? 0,
++          ),
++        )
++        if (descriptor === undefined || descriptor.mode !== 'continuable') {
++          throw new SubagentError(`subagent "${childId}" is not continuable`, 'NOT_RESUMABLE')
++        }
++        label = descriptor.label
++      } else {
++        const persistence = this.requirePersistence()
++        let loaded: Awaited<ReturnType<SessionPersistence['inspect']>>
++        try {
++          loaded = await persistence.inspect(childId, signal)
++        } catch (error: unknown) {
++          signal.throwIfAborted()
++          throw new SubagentError(`subagent "${childId}" is unavailable`, 'NOT_RESUMABLE', { cause: error })
++        }
++        signal.throwIfAborted()
++        this.authorizeLineage(parent, childId, loaded.meta.parentSession)
++        const descriptor = foldSubagentDescriptor(loaded.events.slice(loaded.meta.seedLength ?? 0))
++        if (descriptor === undefined || descriptor.mode !== 'continuable') {
++          throw new SubagentError(`subagent "${childId}" is not continuable`, 'NOT_RESUMABLE')
++        }
++        label = descriptor.label
++      }
++
++      const tombstone: SubagentDeletedData = {
++        version: 1,
++        childId,
++        label,
++        deletedAt: Date.now(),
++      }
++      parent.session.append('subagent/deleted', tombstone)
++      const sessions = this.ctx.get('sessions')
++      if (sessions === undefined) {
++        throw new SubagentError('continuable deletion requires the sessions service', 'CONTINUATION_UNAVAILABLE')
++      }
++      await sessions.flush(parent.session)
++      if (activation !== undefined) await this.dispose(activation)
++      return { ...tombstone, alreadyDeleted: false }
++    })
++  }
++
+   /**
+    * Interrupt one live continuable child's current turn. Admission is
+    * synchronous and the effect is asynchronous: this authorizes the caller,
+@@ -1224,6 +1302,15 @@ export class SubagentContinuationManager {
+     }
+   }
+ 
++  /** Reject an address permanently revoked in the exact live parent's log. */
++  private assertNotDeleted(parent: Agent, childId: SessionId): void {
++    if (foldSubagentDeletion(parent.session.events, childId) === undefined) return
++    throw new SubagentError(
++      `subagent "${childId}" was deleted and cannot accept more messages`,
++      'DELETED',
++    )
++  }
++
+   /**
+    * Follow one Activation to settlement: wait for Agent quiescence, then for
+    * every owned child to complete disposal, and dispose the handle once both
+diff --git a/packages/subagent/subagent/src/deletion.ts b/packages/subagent/subagent/src/deletion.ts
+new file mode 100644
+index 0000000..cfa4689
+--- /dev/null
++++ b/packages/subagent/subagent/src/deletion.ts
+@@ -0,0 +1,127 @@
++/**
++ * Durable, parent-owned deletion tombstones for continuable subagents.
++ *
++ * Deletion deliberately does not remove session media. The direct parent's
++ * append-only log records that the address is revoked; retained child logs can
++ * still satisfy audit and retention policy without remaining resumable.
++ *
++ * @module @deepseek-ai/dsh-subagent/deletion
++ */
++
++import type { Context } from '@deepseek-ai/cordis'
++import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
++import { SubagentError } from './error.ts'
++import type { SubagentDescendantListEntry, SubagentListEntry } from './list-children.ts'
++
++declare module '@deepseek-ai/dsh-session/types' {
++  interface SessionEventMap {
++    /** A direct parent permanently revoking one continuable child address. */
++    'subagent/deleted': SubagentDeletedData
++  }
++}
++
++/** Versioned durable revocation record stored in the direct parent's log. */
++export interface SubagentDeletedData {
++  readonly version: 1
++  readonly childId: SessionId
++  readonly label: string
++  readonly deletedAt: number
++}
++
++/** Public result of deleting a continuable child. */
++export interface ContinuableDeleteResult extends SubagentDeletedData {
++  /** True when the durable tombstone already existed before this request. */
++  readonly alreadyDeleted: boolean
++}
++
++/** Fold the first durable deletion record for one child. */
++export function foldSubagentDeletion(
++  events: readonly SessionEvent[],
++  childId: SessionId,
++): SubagentDeletedData | undefined {
++  const event = events.find(candidate => candidate.type === 'subagent/deleted'
++    && typeof candidate.data === 'object'
++    && candidate.data !== null
++    && (candidate.data as { childId?: unknown }).childId === childId)
++  if (event === undefined) return undefined
++  const data = event.data as Partial<SubagentDeletedData>
++  if (data.version !== 1 || typeof data.label !== 'string' || typeof data.deletedAt !== 'number') {
++    throw new SubagentError(
++      `persisted deletion tombstone for subagent "${childId}" is invalid`,
++      'CORRUPT_DELETION',
++    )
++  }
++  return data as SubagentDeletedData
++}
++
++/** Read every deleted direct-child id from one parent's current log. */
++function deletedChildIds(events: readonly SessionEvent[]): Set<SessionId> {
++  const ids = new Set<SessionId>()
++  for (const event of events) {
++    if (event.type !== 'subagent/deleted' || typeof event.data !== 'object' || event.data === null) continue
++    const data = event.data as Partial<SubagentDeletedData>
++    if (data.version === 1 && typeof data.childId === 'string') ids.add(data.childId as SessionId)
++  }
++  return ids
++}
++
++/** Load a parent's live-preferred event log without resuming an Agent. */
++async function parentEvents(
++  ctx: Context,
++  parentId: SessionId,
++  signal?: AbortSignal,
++): Promise<readonly SessionEvent[]> {
++  signal?.throwIfAborted()
++  const sessions = ctx.get('sessions')
++  if (sessions === undefined) {
++    throw new SubagentError('listing deletion state requires the sessions service', 'LIST_FAILED')
++  }
++  const live = sessions.get(parentId)
++  if (live !== undefined) return live.events
++  const persistence = ctx.get('sessionPersistence')
++  if (persistence === undefined) return []
++  try {
++    const inspected = await persistence.inspect(parentId, signal)
++    signal?.throwIfAborted()
++    return inspected.events
++  } catch (error: unknown) {
++    signal?.throwIfAborted()
++    throw new SubagentError(
++      `cannot inspect deletion state for parent session "${parentId}"`,
++      'LIST_FAILED',
++      { cause: error },
++    )
++  }
++}
++
++/** Remove tombstoned direct children from a public child listing. */
++export async function filterDeletedChildren(
++  ctx: Context,
++  parentId: SessionId,
++  rows: SubagentListEntry[],
++  signal?: AbortSignal,
++): Promise<SubagentListEntry[]> {
++  if (rows.length === 0) return rows
++  const deleted = deletedChildIds(await parentEvents(ctx, parentId, signal))
++  return rows.filter(row => !deleted.has(row.id))
++}
++
++/** Remove tombstoned branches from a stable pre-order descendant listing. */
++export async function filterDeletedDescendants(
++  ctx: Context,
++  rows: SubagentDescendantListEntry[],
++  signal?: AbortSignal,
++): Promise<SubagentDescendantListEntry[]> {
++  if (rows.length === 0) return rows
++  const parentIds = [...new Set(rows.map(row => row.parentId))]
++  const deletions = new Map<SessionId, Set<SessionId>>()
++  await Promise.all(parentIds.map(async (parentId) => {
++    deletions.set(parentId, deletedChildIds(await parentEvents(ctx, parentId, signal)))
++  }))
++  const blocked = new Set<SessionId>()
++  return rows.filter((row) => {
++    const hidden = blocked.has(row.parentId) || deletions.get(row.parentId)?.has(row.id) === true
++    if (hidden) blocked.add(row.id)
++    return !hidden
++  })
++}
+diff --git a/packages/subagent/subagent/src/index.ts b/packages/subagent/subagent/src/index.ts
+index fe270f1..f3b78f4 100644
+--- a/packages/subagent/subagent/src/index.ts
++++ b/packages/subagent/subagent/src/index.ts
+@@ -66,6 +66,8 @@ import type { ContinuableSetupContribution } from './activation-setup-registry.t
+ import { listChildren as listSubagentChildren, listDescendants as listSubagentDescendants } from './list-children.ts'
+ import type { SubagentDescendantListEntry, SubagentListEntry } from './list-children.ts'
+ import { snapshotSubagentDescriptor } from './descriptor.ts'
++import { filterDeletedChildren, filterDeletedDescendants } from './deletion.ts'
++import type { ContinuableDeleteResult } from './deletion.ts'
+ import { subagentIdentityProjectionDefinition, subagentTimingProjectionDefinition } from './projection.ts'
+ 
+ export * from './out-of-process.ts'
+@@ -98,6 +100,8 @@ export type {
+ } from './descriptor.ts'
+ export { seedDescriptorTurn } from './descriptor-seed.ts'
+ export { SubagentError } from './error.ts'
++export { foldSubagentDeletion } from './deletion.ts'
++export type { ContinuableDeleteResult, SubagentDeletedData } from './deletion.ts'
+ export { settleRun } from './run-settlement.ts'
+ export { assertSubagentMaxDepth, delegationDepthOf } from './depth.ts'
+ export {
+@@ -237,6 +241,19 @@ export class SubagentRuntime extends Service {
+     return this.requireContinuations().followup(parent, childId, content, options)
+   }
+ 
++  /**
++   * Durably revoke one continuable child owned by the exact live parent.
++   * Deletion is idempotent and retention-preserving: it appends and flushes a
++   * parent-owned tombstone, then releases any resident Activation child-first.
++   */
++  async deleteContinuable(
++    parent: Agent,
++    childId: SessionId,
++    options: { readonly signal: AbortSignal },
++  ): Promise<ContinuableDeleteResult> {
++    return this.requireContinuations().deleteContinuable(parent, childId, options.signal)
++  }
++
+   /**
+    * Interrupt one live continuable child's current turn under a human parent
+    * address or an exact live ancestor Agent. Fire-and-return: the cancel
+@@ -336,8 +353,9 @@ export class SubagentRuntime extends Service {
+    * @throws {@link SubagentError} when the projection registry or the session
+    *   store is not mounted, or the caller cancels the listing.
+    */
+-  listChildren(parentSessionId: SessionId, signal?: AbortSignal): Promise<SubagentListEntry[]> {
+-    return listSubagentChildren(this.ctx, parentSessionId, signal)
++  async listChildren(parentSessionId: SessionId, signal?: AbortSignal): Promise<SubagentListEntry[]> {
++    const rows = await listSubagentChildren(this.ctx, parentSessionId, signal)
++    return filterDeletedChildren(this.ctx, parentSessionId, rows, signal)
+   }
+ 
+   /**
+@@ -355,8 +373,9 @@ export class SubagentRuntime extends Service {
+    *   stable pre-order.
+    * @throws {@link SubagentError} under the same conditions as {@link listChildren}.
+    */
+-  listDescendants(rootSessionId: SessionId, signal?: AbortSignal): Promise<SubagentDescendantListEntry[]> {
+-    return listSubagentDescendants(this.ctx, rootSessionId, signal)
++  async listDescendants(rootSessionId: SessionId, signal?: AbortSignal): Promise<SubagentDescendantListEntry[]> {
++    const rows = await listSubagentDescendants(this.ctx, rootSessionId, signal)
++    return filterDeletedDescendants(this.ctx, rows, signal)
+   }
+ 
+   /**
+diff --git a/packages/subagent/subagent/tests/continuation.spec.ts b/packages/subagent/subagent/tests/continuation.spec.ts
+index 07f4976..e0e86ee 100644
+--- a/packages/subagent/subagent/tests/continuation.spec.ts
++++ b/packages/subagent/subagent/tests/continuation.spec.ts
+@@ -478,6 +478,27 @@ describe('SubagentRuntime.followup residency routing', () => {
+     expect(loaded.events.filter(event => event.type === 'subagent/descriptor')).toHaveLength(1)
+   })
+ 
++  it('durably deletes a settled child, filters its catalog row, and refuses cold resume', async () => {
++    const { ctx, parent } = await setup([textResponse('first')])
++    const started = await ctx.subagents.startContinuable(startSpec(parent))
++    await waitNoActivation(ctx, started.childId)
++
++    const deleted = await ctx.subagents.deleteContinuable(parent, started.childId, { signal: testSignal })
++    expect(deleted).toMatchObject({
++      version: 1,
++      childId: started.childId,
++      label: 'child task',
++      alreadyDeleted: false,
++    })
++    await expect(followup(ctx, parent, started.childId, message('do not resume')))
++      .rejects.toMatchObject({ code: 'DELETED' })
++
++    await expect(ctx.subagents.deleteContinuable(parent, started.childId, { signal: testSignal }))
++      .resolves.toMatchObject({ childId: started.childId, alreadyDeleted: true })
++    const loadedParent = await ctx.sessionPersistence.load(parent.id)
++    expect(loadedParent.events.filter(event => event.type === 'subagent/deleted')).toHaveLength(1)
++  })
++
+   it('cold-resumes after the initial provider unregisters', async () => {
+     const { ctx, parent } = await setup([textResponse('first'), textResponse('after resume')])
+     await ctx.plugin(InvariantRegistry)
+diff --git a/packages/subagent/subagent/tests/deletion.spec.ts b/packages/subagent/subagent/tests/deletion.spec.ts
+new file mode 100644
+index 0000000..76ad160
+--- /dev/null
++++ b/packages/subagent/subagent/tests/deletion.spec.ts
+@@ -0,0 +1,39 @@
++import { describe, expect, it } from 'vitest'
++import { SessionId } from '@deepseek-ai/dsh-session'
++import type { SessionEvent } from '@deepseek-ai/dsh-session'
++import { foldSubagentDeletion, SubagentError } from '../src/index.ts'
++
++function event(childId: string, data: Record<string, unknown> = {}): SessionEvent {
++  return {
++    type: 'subagent/deleted',
++    seq: 0,
++    time: 100,
++    data: {
++      version: 1,
++      childId,
++      label: 'research',
++      deletedAt: 99,
++      ...data,
++    },
++  } as SessionEvent
++}
++
++describe('continuable deletion tombstones', () => {
++  it('folds the first parent-owned tombstone for an exact child address', () => {
++    const childId = SessionId('child-1')
++    expect(foldSubagentDeletion([event(childId)], childId)).toEqual({
++      version: 1,
++      childId,
++      label: 'research',
++      deletedAt: 99,
++    })
++    expect(foldSubagentDeletion([event('child-2')], childId)).toBeUndefined()
++  })
++
++  it('fails loud on a malformed tombstone for the requested child', () => {
++    expect(() => foldSubagentDeletion(
++      [event('child-1', { deletedAt: 'never' })],
++      SessionId('child-1'),
++    )).toThrowError(expect.objectContaining<Partial<SubagentError>>({ code: 'CORRUPT_DELETION' }))
++  })
++})
+diff --git a/packages/subagent/subagent/tests/list-children.spec.ts b/packages/subagent/subagent/tests/list-children.spec.ts
+index 3fd303e..c073b45 100644
+--- a/packages/subagent/subagent/tests/list-children.spec.ts
++++ b/packages/subagent/subagent/tests/list-children.spec.ts
+@@ -174,6 +174,28 @@ describe('SubagentRuntime.listChildren', () => {
+     ])
+   })
+ 
++  it('filters a child revoked by its live parent deletion tombstone', async () => {
++    const ctx = new Context()
++    await ctx.plugin(SessionStore)
++    await ctx.plugin(SessionProjectionRegistry)
++    await ctx.plugin(SubagentRuntime)
++    const parent = ctx.sessions.create(SessionId('deleting-parent'))
++    const childId = SessionId('deleted-child')
++    const child = ctx.sessions.create(childId, {
++      meta: { parentSession: parent.id, origin: 'subagent' },
++    })
++    child.append('turn/start', { turn: 1 })
++    child.append('subagent/descriptor', descriptorPayload('deleted child'))
++    parent.append('subagent/deleted', {
++      version: 1,
++      childId,
++      label: 'deleted child',
++      deletedAt: 10,
++    })
++
++    await expect(ctx.subagents.listChildren(parent.id)).resolves.toEqual([])
++  })
++
+   it('fails loud when the projection registry is not mounted, even with no children', async () => {
+     const { ctx, parent } = await setup([], { sessionProjections: false })
+     await expect(ctx.subagents.listChildren(parent.id)).rejects.toThrow(

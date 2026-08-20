@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "upstreams": [
+    {
+      "name": "DeepSeek Harness",
+      "repository": "https://github.com/deepseek-ai/deepseek-harness.git",
+      "revision": "99f6f02fecdb7dff40c3fbc9470f5907c29f74ca",
+      "release": "dsh-v0.1.0-rc.7",
+      "license": "MIT",
+      "usage": "Published packages pinned to 0.1.0-rc.7 and upstream-ready patches under patches/deepseek-harness"
+    },
+    {
+      "name": "Prime Agent",
+      "repository": "https://github.com/PrimeIntellect-ai/prime-agent.git",
+      "revision": "f8f0036cc2da1a640aad990ae8dcb7c4820ce32e",
+      "release": "coding-agent 0.7.3; prime-agent-runtime 0.1.0",
+      "license": "MIT",
+      "usage": "Unmodified prime-agent-runtime plus adapted kernel and snapshot techniques"
+    }
+  ],
+  "adaptedFiles": [
+    {
+      "local": "packages/rlm-jupyter/src/kernel.ts",
+      "upstream": "packages/coding-agent/src/core/kernel/index.ts",
+      "revision": "f8f0036cc2da1a640aad990ae8dcb7c4820ce32e",
+      "localChanges": true
+    },
+    {
+      "local": "packages/rlm-jupyter/src/snapshot.ts",
+      "upstream": "packages/coding-agent/src/core/kernel/state-snapshot.ts",
+      "revision": "f8f0036cc2da1a640aad990ae8dcb7c4820ce32e",
+      "localChanges": true
+    },
+    {
+      "local": "packages/rlm-jupyter/src/shell.ts",
+      "upstream": "packages/coding-agent/src/core/tools/ipython.ts; packages/coding-agent/src/core/tools/ipython-cell-code.ts",
+      "revision": "f8f0036cc2da1a640aad990ae8dcb7c4820ce32e",
+      "localChanges": true
+    }
+  ]
+}
