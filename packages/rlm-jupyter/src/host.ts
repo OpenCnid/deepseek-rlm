@@ -532,7 +532,11 @@ export class HostBridge {
     if (!this.config.adapters.tools) {
       throw new HostRequestError('the DSH tools adapter is not enabled', 'ADAPTER_DISABLED')
     }
-    return { tools: this.ctx.tools.schemas(agent) }
+    const tools = this.ctx.get('tools')
+    if (tools === undefined) {
+      throw new HostRequestError('the DSH tools service is unavailable', 'ADAPTER_UNAVAILABLE')
+    }
+    return { tools: tools.schemas(agent) }
   }
 
   private async callTool(
@@ -543,6 +547,10 @@ export class HostBridge {
     ownKeys(payload, ['name', 'arguments'], 'dsh_tools.call request')
     if (!this.config.adapters.tools) {
       throw new HostRequestError('the DSH tools adapter is not enabled', 'ADAPTER_DISABLED')
+    }
+    const tools = this.ctx.get('tools')
+    if (tools === undefined) {
+      throw new HostRequestError('the DSH tools service is unavailable', 'ADAPTER_UNAVAILABLE')
     }
     const name = string(payload.name, 'dsh_tools.call name')
     const arguments_ = object(payload.arguments, 'dsh_tools.call arguments')
@@ -555,7 +563,7 @@ export class HostBridge {
     }
     const count = (this.nestedCallCounts.get(execution.callId) ?? 0) + 1
     this.nestedCallCounts.set(execution.callId, count)
-    const result = await this.ctx.tools.execute({
+    const result = await tools.execute({
       callId: CallId(`${execution.callId}:rlm:${count}`),
       rootCallId: CallId(execution.callId),
       name,

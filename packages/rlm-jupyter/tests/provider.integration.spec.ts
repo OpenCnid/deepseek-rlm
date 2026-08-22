@@ -15,6 +15,7 @@ import {
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import * as spawnProvider from '@deepseek-ai/dsh-subagent-spawn-in-process'
+import { defineTool } from '@deepseek-ai/dsh-tools'
 import { afterEach, describe, expect, it } from 'vitest'
 import * as ipythonTool from '../../tool-ipython/src/index.js'
 import JupyterRlmRuntime from '../src/index.js'
@@ -103,6 +104,80 @@ class IpythonLoopAdapter extends LlmAdapter {
 }
 
 describe('Jupyter RLM provider recovery', () => {
+  it('dispatches a nested Python tool call through the optional live DSH tools service', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-rlm-tools-adapter-'))
+    roots.push(root)
+    const ctx = new Context()
+    contexts.push(ctx)
+    await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    await ctx.plugin(SubagentRuntime)
+    await ctx.plugin(spawnProvider, { providerName: 'rlm-spawn' })
+    const agent = ctx.agentLoop.create(SessionId('provider-tools-adapter'), {
+      provider: 'unused',
+      model: 'unused',
+    })
+    ctx.effect(() =>
+      ctx.tools.register(
+        defineTool({
+          name: 'nested_probe',
+          description: 'Synthetic nested-tool bridge probe.',
+          parameters: {
+            value: { type: 'string', required: true },
+          },
+          output: {
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                accepted: { type: 'boolean', required: true },
+                session_id: { type: 'string', required: true },
+              },
+            },
+            render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
+          },
+          isConcurrencySafe: () => true,
+          execute: (args, exec) =>
+            Promise.resolve({
+              accepted: args.value === 'synthetic',
+              session_id: String(exec.agent?.id),
+            }),
+        }),
+      ),
+    )
+    await ctx.plugin(JupyterRlmRuntime, {
+      artifactRoot: join(root, 'artifacts'),
+      managedRuntimeRoot: resolve('.dsh-rlm/test-runtime'),
+      subagentProvider: 'rlm-spawn',
+      adapters: { tools: true },
+    })
+    await ctx.plugin(ipythonTool)
+
+    const result = await ctx.tools.execute({
+      callId: CallId('nested-probe-cell'),
+      name: 'ipython',
+      arguments: {
+        code: `
+import json as _json
+_probe = await dsh_tools.call("nested_probe", {"value": "synthetic"})
+print("NESTED_PROBE=" + _json.dumps(_probe["value"], sort_keys=True))
+del _probe
+`.trim(),
+      },
+      agent,
+      signal: new AbortController().signal,
+    })
+
+    expect(result).toMatchObject({
+      isError: false,
+      value: {
+        stdout: expect.stringContaining(
+          'NESTED_PROBE={"accepted": true, "session_id": "provider-tools-adapter"}',
+        ),
+      },
+    })
+  }, 120_000)
+
   it('runs persistent IPython through the real DSH agent loop and tool registry', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-rlm-loop-'))
     roots.push(root)
