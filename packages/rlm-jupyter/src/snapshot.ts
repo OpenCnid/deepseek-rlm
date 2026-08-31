@@ -88,24 +88,37 @@ def _dsh_rlm_snapshot_state():
             skipped.append({"name": name, "reason": reason})
             continue
         except _b.Exception as _err:
-            skipped.append({"name": name, "reason": _b.type(_err).__name__ + ": " + _b.str(_err)[:200]})
+            skipped.append({"name": name, "reason": "serialization failed (" + _b.type(_err).__name__ + ")"})
             continue
         payload[name] = blob
         total += _b.len(blob)
+
+    while True:
+        aggregate = _Buffer(${maximumBytes})
+        try:
+            dill.dump(payload, aggregate)
+            encoded_payload = aggregate.getvalue()
+            break
+        except _Limit:
+            if not payload:
+                _b.print(${pythonString(resultMarker)} + json.dumps({"error": "snapshot size cap is too small for an empty payload"}))
+                return
+            removed = _b.next(_b.reversed(payload))
+            total -= _b.len(payload.pop(removed))
+            skipped.append({"name": removed, "reason": "exceeds aggregate snapshot size cap"})
 
     os.makedirs(os.path.dirname(${pythonString(outputPath)}), exist_ok=True)
     payload_tmp = ${pythonString(outputPath)} + ".tmp-" + os.urandom(8).hex()
     manifest_tmp = ${pythonString(manifestPath)} + ".tmp-" + os.urandom(8).hex()
     try:
         with _b.open(payload_tmp, "xb") as fh:
-            dill.dump(payload, fh)
+            fh.write(encoded_payload)
         try:
             os.chmod(payload_tmp, 0o600)
         except _b.Exception:
             pass
-        with _b.open(payload_tmp, "rb") as fh:
-            digest = hashlib.sha256(fh.read()).hexdigest()
-        bytes_written = os.path.getsize(payload_tmp)
+        digest = hashlib.sha256(encoded_payload).hexdigest()
+        bytes_written = _b.len(encoded_payload)
         manifest = {
             "version": 1,
             "runtimeVersion": ${pythonString(runtimeVersion)},
@@ -167,7 +180,7 @@ def _dsh_rlm_restore_state():
             ns[name] = dill.loads(blob)
             restored.append(name)
         except _b.Exception as _err:
-            failed.append({"name": name, "reason": _b.type(_err).__name__ + ": " + _b.str(_err)[:200]})
+            failed.append({"name": name, "reason": "deserialization failed (" + _b.type(_err).__name__ + ")"})
     _b.print(${pythonString(resultMarker)} + json.dumps({"restored": _b.sorted(restored), "failed": failed}))
 
 try:

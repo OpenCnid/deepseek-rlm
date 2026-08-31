@@ -6,4 +6,4 @@ Runtime failures from Python resolve as `RlmExecutionResult`; invalid caller inp
 
 ## Compatibility requirement
 
-DeepSeek Harness rc.7 cannot mark out-of-tree informational events with its existing `ignorable: true` envelope contract. This package exposes `appendRlmSessionEvent()`, which requires the public method supplied by `0003-public-ignorable-session-events.patch` and fails with `UNSUPPORTED_IGNORABLE_SESSION_EVENTS` when it is absent. It never falls back to a live event that would poison cold restore.
+DeepSeek Harness alpha.3 cannot mark out-of-tree informational events with its existing `ignorable: true` envelope contract. This package exposes `appendRlmSessionEvent()`, which requires the public method supplied by `0003-public-ignorable-session-events.patch` and fails with `UNSUPPORTED_IGNORABLE_SESSION_EVENTS` when it is absent. It never falls back to a live event that would poison cold restore.

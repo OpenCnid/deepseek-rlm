@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { Dealer, Subscriber } from 'zeromq'
-import { ByteAccumulator } from './byte-buffer.js'
+import { ByteAccumulator, ByteBudget } from './byte-buffer.js'
 import {
   createConnectionInfo,
   createMessage,
@@ -51,6 +51,7 @@ export interface KernelHostRequestContext {
         readonly token?: symbol
         readonly signal: AbortSignal
         readonly isOpen: () => boolean
+        readonly nextNestedCallSequence: () => number
       }
     | undefined
   isCurrent(): boolean
@@ -111,6 +112,7 @@ interface ActiveExecution {
   readonly startedAt: number
   readonly stdout: ByteAccumulator
   readonly stderr: ByteAccumulator
+  readonly outputBudget: ByteBudget
   readonly options: KernelExecuteOptions
   resolve: (result: KernelExecutionResult) => void
   reject: (error: Error) => void
@@ -120,6 +122,7 @@ interface ActiveExecution {
   settled: boolean
   open: boolean
   restartForced: boolean
+  nestedCallCount: number
 }
 
 interface RequestTask {
@@ -129,12 +132,6 @@ interface RequestTask {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
-}
-
-function boundedText(text: string, maximumBytes: number): string {
-  const accumulator = new ByteAccumulator(maximumBytes)
-  accumulator.append(text)
-  return accumulator.render()
 }
 
 function parentMessageId(message: JupyterMessage): string | undefined {
@@ -383,11 +380,13 @@ export class KernelManager {
     )
 
     return new Promise<KernelExecutionResult>((resolve, reject) => {
+      const outputBudget = new ByteBudget(options.maxOutputBytes)
       const execution: ActiveExecution = {
         requestId: message.header.msg_id,
         startedAt,
-        stdout: new ByteAccumulator(options.maxOutputBytes),
-        stderr: new ByteAccumulator(options.maxOutputBytes),
+        stdout: new ByteAccumulator(outputBudget),
+        stderr: new ByteAccumulator(outputBudget),
+        outputBudget,
         options,
         resolve,
         reject,
@@ -395,6 +394,7 @@ export class KernelManager {
         settled: false,
         open: true,
         restartForced: false,
+        nestedCallCount: 0,
       }
       this.active = execution
       this.options.onPhase('busy')
@@ -480,7 +480,10 @@ export class KernelManager {
     if (type === 'execute_result') {
       const data = message.content.data
       if (isRecord(data) && typeof data['text/plain'] === 'string') {
-        execution.result = boundedText(data['text/plain'], execution.options.maxOutputBytes)
+        const result = new ByteAccumulator(execution.outputBudget)
+        result.append(data['text/plain'])
+        const rendered = result.render()
+        if (rendered.length > 0) execution.result = rendered
       }
       return
     }
@@ -490,12 +493,25 @@ export class KernelManager {
         typeof message.content.evalue === 'string' &&
         Array.isArray(message.content.traceback)
       ) {
+        const name = new ByteAccumulator(256)
+        name.append(message.content.ename)
+        const errorMessage = new ByteAccumulator(execution.outputBudget)
+        const acceptedMessage = errorMessage.append(message.content.evalue)
+        const traceback: string[] = []
+        if (acceptedMessage === message.content.evalue) {
+          for (const line of message.content.traceback) {
+            if (typeof line !== 'string') continue
+            const output = new ByteAccumulator(execution.outputBudget)
+            const accepted = output.append(line)
+            const rendered = output.render()
+            if (rendered.length > 0) traceback.push(rendered)
+            if (accepted !== line) break
+          }
+        }
         execution.error = {
-          name: message.content.ename,
-          message: message.content.evalue,
-          traceback: message.content.traceback.filter(
-            (line): line is string => typeof line === 'string',
-          ),
+          name: name.render(),
+          message: errorMessage.render(),
+          traceback,
         }
         execution.status = 'error'
       }
@@ -572,6 +588,10 @@ export class KernelManager {
                 : { token: active.options.executionToken }),
               signal: active.options.signal ?? this.generationAbort.signal,
               isOpen: () => active.open,
+              nextNestedCallSequence: () => {
+                active.nestedCallCount += 1
+                return active.nestedCallCount
+              },
             },
       isCurrent: () =>
         !signal.aborted &&

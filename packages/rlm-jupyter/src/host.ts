@@ -137,7 +137,6 @@ function labelOf(entry: SubagentListEntry): string | undefined {
 /** Translation only: DSH remains the sole owner of agents, models, tools and policy. */
 export class HostBridge {
   private readonly labelLock = new KeyedLock()
-  private readonly nestedCallCounts = new Map<string, number>()
 
   constructor(
     private readonly ctx: Context,
@@ -552,8 +551,7 @@ export class HostBridge {
         'REQUEST_SCOPE_CLOSED',
       )
     }
-    const count = (this.nestedCallCounts.get(execution.callId) ?? 0) + 1
-    this.nestedCallCounts.set(execution.callId, count)
+    const count = execution.nextNestedCallSequence()
     const result = await tools.execute({
       callId: ToolCallId(`${execution.callId}:rlm:${count}`),
       rootCallId: ToolCallId(execution.callId),

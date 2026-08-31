@@ -112,10 +112,10 @@ Important defaults:
 | `interruptGraceMs`          | `2000`       |
 | `shutdownGraceMs`           | `5000`       |
 | `hostRequestDrainMs`        | `5000`       |
-| `maxOutputBytes`            | 4 MiB        |
+| `maxOutputBytes`            | 4 MiB/cell   |
 | `snapshot.policy`           | `after-cell` |
-| `snapshot.maxBytes`         | 256 MiB      |
-| `snapshot.maxVariableBytes` | 16 MiB       |
+| `snapshot.maxBytes`         | 256 MiB/file |
+| `snapshot.maxVariableBytes` | 16 MiB/value |
 | `envAllowlist`              | empty        |
 
 `shellPath` replaces a bare `%%bash` with `%%script <shell>`. `commandPrefix`
