@@ -7,8 +7,8 @@
 <p align="center">
   <a href="https://github.com/OpenCnid/deepseek-rlm/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/OpenCnid/deepseek-rlm/ci.yml?branch=main&style=flat-square&label=CI"></a>
   <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/License-MIT-22c55e?style=flat-square"></a>
-  <img alt="Node.js 20 or newer" src="https://img.shields.io/badge/Node.js-%E2%89%A520-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white">
-  <img alt="DeepSeek Harness 0.1.0 release candidate 7" src="https://img.shields.io/badge/DeepSeek_Harness-0.1.0--rc.7-4D6BFE?style=flat-square">
+  <img alt="Node.js 22.19 or newer" src="https://img.shields.io/badge/Node.js-%5E22.19%20%7C%7C%20%3E%3D24-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white">
+  <img alt="DeepSeek Harness 0.1.2 alpha 3" src="https://img.shields.io/badge/DeepSeek_Harness-0.1.2--alpha.3-4D6BFE?style=flat-square">
   <img alt="Python 3.11" src="https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python&logoColor=white">
 </p>
 
@@ -24,7 +24,7 @@ sessions, policy, lineage, cancellation, and persistence.
 > bundle for DeepSeek Harness—not another harness and not a DeepSeek model.
 
 > [!IMPORTANT]
-> This preview targets the exact DSH `0.1.0-rc.7` baseline and requires three
+> This preview targets the exact DSH `0.1.2-alpha.3` baseline and requires two
 > ordered host patches. The packages are not published; install the local
 > tarballs using the [installation guide](docs/INSTALL.md).
 
@@ -53,18 +53,17 @@ an LLM provider from Python, or runs a second agent loop.
 
 ## Compatibility
 
-| Component            | Supported baseline                                           |
-| -------------------- | ------------------------------------------------------------ |
-| DeepSeek Harness     | `dsh-v0.1.0-rc.7` / `99f6f02` plus all three bundled patches |
-| Cordis               | `4.0.1`                                                      |
-| Workspace Node.js    | `>=20`                                                       |
-| Full pinned DSH host | Node.js `^22.19` or `>=24`                                   |
-| Package manager      | pnpm `9.14.4`                                                |
-| Managed Python       | Python `3.11` through `uv`                                   |
-| Prime Agent runtime  | vendored pin `f8f0036`                                       |
+| Component           | Supported baseline                                        |
+| ------------------- | --------------------------------------------------------- |
+| DeepSeek Harness    | `dsh-v0.1.2-alpha.3` / `dd6322d` plus two bundled patches |
+| Cordis              | `4.0.2`                                                   |
+| Node.js             | `^22.19` or `>=24`                                        |
+| Package manager     | pnpm `11.7.0`                                             |
+| Managed Python      | Python `3.11` through `uv`                                |
+| Prime Agent runtime | vendored pin `f8f0036`                                    |
 
 The DSH packages move as one audited set. Do not mix registry copies or another
-release candidate into the profile.
+pre-release into the profile.
 
 ## Quick start
 
@@ -77,7 +76,7 @@ pnpm install --frozen-lockfile
 pnpm package:bundle
 ```
 
-Apply the three patches under `patches/deepseek-harness/` to the exact pinned
+Apply the two patches under `patches/deepseek-harness/` to the exact pinned
 DSH checkout, configure the generated tarballs as profile-local overrides, and
 install the bundle:
 
@@ -179,8 +178,11 @@ patch series against a fresh pinned DSH checkout.
 ## Documentation
 
 - [Installation and troubleshooting](docs/INSTALL.md)
+- [Architecture map](ARCHITECTURE.md)
 - [Architecture and implementation contract](SPEC.md)
+- [Future implementation milestones](MILESTONES.md)
 - [DeepSeek Harness patch guide](patches/deepseek-harness/README.md)
+- [DSH alpha.3 upgrade evidence](docs/qa/2026-08-31-dsh-alpha3-upgrade.md)
 - [Hardening and assembled QA evidence](docs/qa/2026-08-20-dsh-rlm-hardening.md)
 - [Third-party provenance and notices](THIRD_PARTY_NOTICES.md)
 - [Contributor and coding-agent guidance](AGENTS.md)

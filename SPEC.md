@@ -1,8 +1,8 @@
 # DeepSeek RLM Cordis Plugin Specification
 
-Status: Draft v0.1  
-Date: 2026-08-19  
-Target: DeepSeek Harness `dsh-v0.1.0-rc.7`  
+Status: Draft v0.1
+Date: 2026-08-31
+Target: DeepSeek Harness `dsh-v0.1.2-alpha.3`
 
 ## 1. Summary
 
@@ -54,15 +54,15 @@ Implementation and compatibility tests MUST pin these exact upstream revisions u
 
 | Upstream | Revision | Release observed during research |
 |---|---|---|
-| DeepSeek Harness | `99f6f02fecdb7dff40c3fbc9470f5907c29f74ca` | `dsh-v0.1.0-rc.7` |
+| DeepSeek Harness | `dd6322d604e00eec1ba5e0c8541159906a21094a` | `dsh-v0.1.2-alpha.3` |
 | Prime Agent | `f8f0036cc2da1a640aad990ae8dcb7c4820ce32e` | coding-agent `0.7.3`; `prime-agent-runtime` `0.1.0` |
 
 Normative upstream references:
 
-- [DeepSeek Harness architecture](https://github.com/deepseek-ai/deepseek-harness/blob/99f6f02fecdb7dff40c3fbc9470f5907c29f74ca/docs/architecture.md)
-- [DeepSeek Harness subagent seam](https://github.com/deepseek-ai/deepseek-harness/blob/99f6f02fecdb7dff40c3fbc9470f5907c29f74ca/packages/subagent/subagent/README.md)
-- [DeepSeek Harness tool runtime](https://github.com/deepseek-ai/deepseek-harness/blob/99f6f02fecdb7dff40c3fbc9470f5907c29f74ca/packages/core/tools/README.md)
-- [DeepSeek Harness bundle publishing](https://github.com/deepseek-ai/deepseek-harness/blob/99f6f02fecdb7dff40c3fbc9470f5907c29f74ca/docs/user/develop/basic/publish.md)
+- [DeepSeek Harness architecture](https://github.com/deepseek-ai/deepseek-harness/blob/dd6322d604e00eec1ba5e0c8541159906a21094a/docs/architecture.md)
+- [DeepSeek Harness subagent seam](https://github.com/deepseek-ai/deepseek-harness/blob/dd6322d604e00eec1ba5e0c8541159906a21094a/packages/subagent/subagent/README.md)
+- [DeepSeek Harness tool runtime](https://github.com/deepseek-ai/deepseek-harness/blob/dd6322d604e00eec1ba5e0c8541159906a21094a/packages/core/tools/README.md)
+- [DeepSeek Harness bundle publishing](https://github.com/deepseek-ai/deepseek-harness/blob/dd6322d604e00eec1ba5e0c8541159906a21094a/docs/user/develop/basic/publish.md)
 - [Prime Agent RLM programming model](https://github.com/PrimeIntellect-ai/prime-agent/blob/f8f0036cc2da1a640aad990ae8dcb7c4820ce32e/packages/coding-agent/docs/rlm.md)
 - [Prime Agent RLM runtime architecture](https://github.com/PrimeIntellect-ai/prime-agent/blob/f8f0036cc2da1a640aad990ae8dcb7c4820ce32e/packages/coding-agent/docs/rlm-runtime.md)
 
@@ -352,7 +352,7 @@ Resolve an exact child ID or unique direct-child label. Ambiguous names fail. De
 - retain transcript and artifacts; and
 - return the deleted child descriptor.
 
-DeepSeek Harness rc.7 does not expose this operation publicly. Section 14 requires a small upstream-ready service-seam addition. Reaching into continuation-manager private fields is forbidden.
+DeepSeek Harness alpha.3 does not expose this operation publicly. Section 14 requires a small upstream-ready service-seam addition. Reaching into continuation-manager private fields is forbidden.
 
 ### 11.5 Parent/child messages
 
@@ -452,7 +452,7 @@ The latest valid snapshot event plus its digest is authoritative. An orphan file
 
 ## 14. Required DeepSeek Harness seam additions
 
-Full parity requires two generic changes to DeepSeek Harness. They MUST be implemented as upstream-quality patches with tests and kept narrow enough to propose upstream.
+The current preview requires two generic changes to DeepSeek Harness. They MUST be implemented as upstream-quality patches with tests and kept narrow enough to propose upstream. Alpha.3 already supplies persisted per-child reasoning effort natively.
 
 ### 14.1 Durable continuable-child deletion
 
@@ -468,13 +468,13 @@ ctx.subagents.deleteContinuable(
 
 It owns authorization, admission fencing, descendant drain, activation disposal, durable tombstone, catalog filtering, cold-resume refusal, and idempotency rules. The RLM plugin only translates selectors and response shape.
 
-### 14.2 Persisted per-child reasoning effort
+### 14.2 Public ignorable Session events
 
-Extend the generic agent/subagent creation vocabulary so a selected `ReasoningEffortId` can be supplied before the child's first request, persisted in the continuable descriptor, restored on cold resume, and applied through DeepSeek Harness model selection. The value MUST be validated against `ctx.llm.resolveModelInfo()` before child admission.
+Add a public `Session.appendIgnorable()` operation for typed, non-surface informational events. The writer MUST use the ordinary validated append/publication path and mark the persisted envelope `ignorable: true`, allowing older readers to skip plugin-defined event types safely. The current snapshot authorization scheme requires this seam for `rlm/*` metadata.
 
-Installing an `agent/request` listener after `startContinuable()` returns is racy and forbidden because the child's first request may already have begun.
+Alpha.3's native agent/subagent vocabulary accepts a selected `ReasoningEffortId` before the child's first request, persists it in the continuable descriptor, restores it on cold resume, and applies it through model selection. The plugin MUST still validate the value against `ctx.llm.resolveModelInfo()` before child admission. Installing an `agent/request` listener after `startContinuable()` returns remains racy and forbidden.
 
-If either patch has not landed, the integration may ship an explicitly labeled preview, but `rlm.delete_subagent` and/or `thinking` MUST fail with stable unsupported-capability errors. A release claiming full RLM parity cannot omit them.
+If deletion support is absent, `rlm.delete_subagent` MUST fail with the stable unsupported-capability error. If the ignorable-event writer is absent, the provider MUST fail before recording snapshot authority through a weaker or live-only path.
 
 ## 15. Configuration
 
@@ -560,8 +560,8 @@ Child token and cost accounting remains a DeepSeek Harness concern. The plugin M
 
 ## 18. Compatibility requirements
 
-- Node.js 20 or newer.
-- pnpm 9 for repository development.
+- Node.js `^22.19` or `>=24`.
+- pnpm `11.7.0` for repository development.
 - Python 3.11 default; Python 3.10+ only when the full dependency probe passes.
 - Windows 11, current macOS, and a current Ubuntu LTS in CI.
 - Windows `%%bash` requires an explicitly configured Bash executable or a discoverable Git Bash/WSL strategy; failure must be explanatory.
@@ -646,8 +646,8 @@ Exit: process restart and compaction-resume tests pass without replaying cells.
 
 ### Milestone 4 — Full-parity seam patches
 
-- Implement upstream-ready DeepSeek Harness deletion and persisted reasoning-effort patches.
-- Complete `rlm.delete_subagent` and `thinking` support.
+- Implement upstream-ready DeepSeek Harness deletion and public ignorable-event patches.
+- Complete `rlm.delete_subagent`, snapshot-authority, and native `thinking` support.
 
 Exit: deletion/cold-resume and first-request reasoning tests pass; no private-field access exists.
 

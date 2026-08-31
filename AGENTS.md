@@ -20,9 +20,12 @@ Preserve these invariants:
 - Child admission, continuation, model routing, reasoning effort, messaging,
   deletion, and cold restore remain native DSH operations.
 
-Read [SPEC.md](SPEC.md) before architecture, protocol, snapshot, lifecycle, or
-security changes. Read [patches/deepseek-harness/README.md](patches/deepseek-harness/README.md)
-before changing DSH compatibility seams.
+Read [ARCHITECTURE.md](ARCHITECTURE.md) for the system map and ownership
+boundaries. Read [SPEC.md](SPEC.md) before architecture, protocol, snapshot,
+lifecycle, or security changes. Read [MILESTONES.md](MILESTONES.md) before
+post-preview migration work, and read
+[patches/deepseek-harness/README.md](patches/deepseek-harness/README.md) before
+changing DSH compatibility seams.
 
 ## Repository map
 
@@ -34,14 +37,16 @@ before changing DSH compatibility seams.
 - `packages/bundle`: Loader patch and readiness-gated native spawn provider.
 - `python/dsh-rlm-runtime`: project-owned Python bridge modules and tests.
 - `vendor/prime-agent-runtime`: exact vendored upstream Prime runtime pin.
-- `patches/deepseek-harness`: ordered patches for the exact DSH rc.7 revision.
+- `patches/deepseek-harness`: ordered patches for the exact DSH alpha.3 revision.
 - `provenance`: upstream revision facts and vendored-file digests.
 - `tests`: workspace-level integration and bundle e2e tests.
+- `ARCHITECTURE.md`: short system map, ownership boundaries, and invariants.
+- `MILESTONES.md`: post-preview migration sequence and acceptance criteria.
 - `docs/qa`: assembled hardening evidence; never place credentials here.
 
 ## Toolchain and validation
 
-Use Node.js `>=20`, pnpm `9.14.4`, `uv`, and a provisionable Python 3.11:
+Use Node.js `^22.19` or `>=24`, pnpm `11.7.0`, `uv`, and a provisionable Python 3.11:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -69,16 +74,13 @@ provenance, patch verification, package inspection, real Jupyter/DSH
 integration, and bundle e2e behavior. Package changes are incomplete until the
 isolated five-tarball smoke install succeeds.
 
-The full pinned DSH host itself requires Node.js `^22.19` or `>=24`; this
-workspace's Node 20 package target does not lower the host requirement.
-
 ## Compatibility and generated assets
 
-- DSH is pinned to `99f6f02` / `dsh-v0.1.0-rc.7`, Cordis to `4.0.1`, and Prime
+- DSH is pinned to `dd6322d` / `dsh-v0.1.2-alpha.3`, Cordis to `4.0.2`, and Prime
   Agent to `f8f0036`. Do not widen or move one pin without a full audit.
 - Treat the DSH package set as atomic. Registry copies in a profile can split
   service symbols and shadow patched host seams.
-- Apply the three DSH patches in filename order. If a capability is missing,
+- Apply the two DSH patches in filename order. If a capability is missing,
   fail with its stable unsupported error; do not add a private-state or
   live-only fallback.
 - Do not hand-edit `vendor/prime-agent-runtime`. An upstream change requires a

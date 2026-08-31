@@ -1,8 +1,8 @@
 diff --git a/packages/core/session/src/index.ts b/packages/core/session/src/index.ts
-index 2d82a88..c82dcd9 100644
+index afa2ff3..5cfa469 100644
 --- a/packages/core/session/src/index.ts
 +++ b/packages/core/session/src/index.ts
-@@ -606,7 +606,35 @@ export class Session {
+@@ -604,7 +604,35 @@ export class Session {
      data: SessionEventMap[T],
      ...opts: T extends SurfaceEventType ? [opts: SurfaceIntent] : []
    ): SessionEvent<T> {
@@ -39,7 +39,7 @@ index 2d82a88..c82dcd9 100644
      const surfaceMetadata = {
        ...surfaceOpts?.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: surfaceOpts.sourceEventSeqs },
        ...surfaceOpts?.surfaceOp === undefined ? {} : { surfaceOp: surfaceOpts.surfaceOp },
-@@ -629,6 +657,7 @@ export class Session {
+@@ -627,6 +655,7 @@ export class Session {
        seq: this.log.length,
        time: Date.now(),
        data: dataSnapshot,
@@ -48,12 +48,12 @@ index 2d82a88..c82dcd9 100644
      } as unknown as SessionEvent<T>)
      this.surfaceManager.validateNext(event as SessionEvent)
 diff --git a/packages/core/session/tests/session.spec.ts b/packages/core/session/tests/session.spec.ts
-index 47453ea..509e0a6 100644
+index 49c4e3f..6e4885e 100644
 --- a/packages/core/session/tests/session.spec.ts
 +++ b/packages/core/session/tests/session.spec.ts
 @@ -11,7 +11,30 @@ import SessionStore, {
  } from '@deepseek-ai/dsh-session'
- import type { CreateSessionOptions, SessionEventType, SessionHeader, SessionSurface, TodoItem } from '@deepseek-ai/dsh-session'
+ import type { CreateSessionOptions, SessionEventType, SessionHeader, SessionSurface } from '@deepseek-ai/dsh-session'
  
 +declare module '@deepseek-ai/dsh-session/types' {
 +  interface SessionEventMap {

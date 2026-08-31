@@ -12,7 +12,7 @@ Important architectural constraint: DeepSeek Harness must remain the sole harnes
 
 Use these pinned upstream baselines unless `SPEC.md` has been intentionally updated:
 
-- DeepSeek Harness: `99f6f02fecdb7dff40c3fbc9470f5907c29f74ca` (`dsh-v0.1.0-rc.7`)
+- DeepSeek Harness: `dd6322d604e00eec1ba5e0c8541159906a21094a` (`dsh-v0.1.2-alpha.3`)
 - Prime Agent: `f8f0036cc2da1a640aad990ae8dcb7c4820ce32e`
 
 Clone or inspect those repositories in a temporary/read-only location. Read their `AGENTS.md` files and the exact source contracts before coding. Do not guess DeepSeek Harness APIs from names. Reuse or adapt the smallest MIT-licensed Prime kernel/runtime pieces needed, preserve provenance and license notices, and keep all pins reproducible.

@@ -2,7 +2,7 @@
 
 ## DeepSeek Harness
 
-This project targets DeepSeek Harness revision `99f6f02fecdb7dff40c3fbc9470f5907c29f74ca` (`dsh-v0.1.0-rc.7`) through its published `0.1.0-rc.7` packages. DeepSeek Harness is MIT licensed. No DeepSeek Harness source is vendored in the production packages; the files under `patches/deepseek-harness/` are proposed changes against that revision and retain the upstream license.
+This project targets DeepSeek Harness revision `dd6322d604e00eec1ba5e0c8541159906a21094a` (`dsh-v0.1.2-alpha.3`) through its published `0.1.2-alpha.3` packages. DeepSeek Harness is MIT licensed. No DeepSeek Harness source is vendored in the production packages; the files under `patches/deepseek-harness/` are proposed changes against that revision and retain the upstream license.
 
 ## Prime Agent
 

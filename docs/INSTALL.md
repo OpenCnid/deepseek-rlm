@@ -7,11 +7,10 @@ registry-installed host packages can split Cordis service identities.
 ## Prerequisites
 
 - DeepSeek Harness revision
-  `99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`
-  (`dsh-v0.1.0-rc.7`)
-- Node.js `>=20` for this workspace
-- Node.js `^22.19` or `>=24` for the full pinned DSH host
-- pnpm `9.14.4`
+  `dd6322d604e00eec1ba5e0c8541159906a21094a`
+  (`dsh-v0.1.2-alpha.3`)
+- Node.js `^22.19` or `>=24`
+- pnpm `11.7.0`
 - `uv`, with permission to provision Python 3.11
 - absolute writable directories for RLM artifacts and the managed runtime
 
@@ -30,13 +29,12 @@ isolated smoke project. The tarballs are written to `artifacts/packages/`.
 Apply the patches in filename order to the exact revision above:
 
 ```sh
-git -C /path/to/deepseek-harness apply /path/to/deepseek-rlm/patches/deepseek-harness/0001-persisted-child-reasoning-effort.patch
 git -C /path/to/deepseek-harness apply /path/to/deepseek-rlm/patches/deepseek-harness/0002-continuable-child-deletion.patch
 git -C /path/to/deepseek-harness apply /path/to/deepseek-rlm/patches/deepseek-harness/0003-public-ignorable-session-events.patch
 ```
 
-Patch 1 provides validated, persisted per-child reasoning. Patch 2 provides
-public durable child deletion. Patch 3 makes independently defined `rlm/*`
+DSH alpha.3 natively provides validated, persisted per-child reasoning. Patch
+2 provides public durable child deletion. Patch 3 makes independently defined `rlm/*`
 informational events safe for cold reads. Missing patches produce explicit
 unsupported-capability errors; the plugin does not substitute a weaker path.
 
@@ -143,8 +141,6 @@ Then admit a child with `await rlm(...)` and require it to report through
 
 ## Troubleshooting
 
-- **`UNSUPPORTED_REASONING_EFFORT`:** rebuild the exact DSH checkout with patch
-  1.
 - **`UNSUPPORTED_DELETION`:** rebuild the exact DSH checkout with patch 2.
 - **`UNSUPPORTED_IGNORABLE_SESSION_EVENTS`:** apply patch 3. A live-only event
   is intentionally not used as fallback.
