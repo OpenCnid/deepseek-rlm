@@ -11,8 +11,13 @@ describe('snapshot helpers', () => {
     const code = buildSnapshotCode('/tmp/state.dill', '/tmp/state.json', 100, 50, '1.0')
     expect(code).toContain('os.replace(payload_tmp')
     expect(code).toContain('hashlib.sha256')
+    expect(code).toContain('aggregate = _Buffer(100)')
+    expect(code).toContain('fh.write(encoded_payload)')
+    expect(code).not.toContain('_b.str(_err)[:200]')
     expect(code).not.toContain('history')
-    expect(buildRestoreCode('/tmp/state.dill')).toContain('for name, blob in payload.items()')
+    const restore = buildRestoreCode('/tmp/state.dill')
+    expect(restore).toContain('for name, blob in payload.items()')
+    expect(restore).not.toContain('_b.str(_err)[:200]')
   })
 
   it('parses marker results losslessly', () => {

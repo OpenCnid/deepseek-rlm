@@ -44,13 +44,16 @@ const sessionIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/u
 interface KernelSlot {
   readonly agent: Agent
   readonly sessionDirectory: string
+  readonly lifetime: AbortController
   generation: number
   state: RlmKernelInfo['state']
   python: string | undefined
   kernel: KernelManager | undefined
   startup: Promise<KernelManager> | undefined
+  generationLifetime: AbortController | undefined
   activeCalls: number
   restartReason: 'start' | 'restart'
+  disposed: boolean
 }
 
 interface SnapshotEventData {
@@ -216,13 +219,16 @@ export class JupyterRlmRuntime extends RlmRuntime {
     const created: KernelSlot = {
       agent,
       sessionDirectory: safeSessionDirectory(this.config.artifactRoot, agent),
+      lifetime: new AbortController(),
       generation: 0,
       state: 'starting',
       python: undefined,
       kernel: undefined,
       startup: undefined,
+      generationLifetime: undefined,
       activeCalls: 0,
       restartReason: 'start',
+      disposed: false,
     }
     this.slots.set(agent.id, created)
     return created
@@ -263,27 +269,61 @@ export class JupyterRlmRuntime extends RlmRuntime {
   }
 
   private ensureReady(slot: KernelSlot, signal?: AbortSignal): Promise<KernelManager> {
+    if (slot.disposed) return Promise.reject(new Error('RLM agent kernel is disposing'))
     if (slot.kernel?.isRunning === true) return Promise.resolve(slot.kernel)
     if (slot.startup !== undefined) return slot.startup
-    const startup = this.startGeneration(slot, signal).finally(() => {
+    slot.generationLifetime?.abort(new Error('RLM kernel generation retired'))
+    const generationLifetime = new AbortController()
+    slot.generationLifetime = generationLifetime
+    const startup = this.startGeneration(slot, generationLifetime, signal).finally(() => {
       if (slot.startup === startup) slot.startup = undefined
     })
     slot.startup = startup
     return startup
   }
 
-  private async startGeneration(slot: KernelSlot, signal?: AbortSignal): Promise<KernelManager> {
+  private async startGeneration(
+    slot: KernelSlot,
+    generationLifetime: AbortController,
+    signal?: AbortSignal,
+  ): Promise<KernelManager> {
     await this.predecessor
-    if (this.disposed) throw new Error('RLM provider disposed before kernel startup')
+    const startupSignal =
+      signal === undefined
+        ? AbortSignal.any([slot.lifetime.signal, generationLifetime.signal])
+        : AbortSignal.any([signal, slot.lifetime.signal, generationLifetime.signal])
+    const abandonGeneration = (): void => {
+      generationLifetime.abort(new Error('RLM kernel generation abandoned'))
+      if (slot.generationLifetime === generationLifetime) slot.generationLifetime = undefined
+    }
+    if (this.disposed || slot.disposed || startupSignal.aborted) {
+      abandonGeneration()
+      throw new Error('RLM provider disposed before kernel startup')
+    }
+    const previous = slot.kernel
+    if (previous !== undefined) {
+      slot.kernel = undefined
+      await previous.dispose()
+    }
     slot.generation += 1
     slot.state = 'starting'
     await mkdir(join(slot.sessionDirectory, 'harness'), { recursive: true, mode: 0o700 })
     const probeEnvironment = kernelEnvironment(this.config)
-    const python = await resolveKernelPython({
-      ...(this.config.python === undefined ? {} : { python: this.config.python }),
-      managedRuntimeRoot: this.config.managedRuntimeRoot,
-      probeEnvironment,
-    })
+    let python: string
+    try {
+      python = await resolveKernelPython({
+        ...(this.config.python === undefined ? {} : { python: this.config.python }),
+        managedRuntimeRoot: this.config.managedRuntimeRoot,
+        probeEnvironment,
+      })
+    } catch (error) {
+      abandonGeneration()
+      throw error
+    }
+    if (this.disposed || slot.disposed || startupSignal.aborted) {
+      abandonGeneration()
+      throw new Error('RLM provider disposed during kernel provisioning')
+    }
     slot.python = python
     const generation = slot.generation
     let kernel!: KernelManager
@@ -297,7 +337,11 @@ export class JupyterRlmRuntime extends RlmRuntime {
       shutdownGraceMs: this.config.shutdownGraceMs,
       hostRequestDrainMs: this.config.hostRequestDrainMs,
       isGenerationCurrent: () =>
-        !this.disposed && slot.generation === generation && slot.kernel === kernel,
+        !this.disposed &&
+        !slot.disposed &&
+        !generationLifetime.signal.aborted &&
+        slot.generation === generation &&
+        slot.kernel === kernel,
       dispatchHostRequest: (type, payload, request) =>
         this.bridge.dispatch(slot.agent, type, payload, request),
       onPhase: (phase, fields) => {
@@ -314,13 +358,20 @@ export class JupyterRlmRuntime extends RlmRuntime {
     })
     slot.kernel = kernel
     try {
-      await this.boots.run(() => kernel.start(signal))
-      await kernel.execute(bootstrapCode(), {
-        ...(signal === undefined ? {} : { signal }),
+      await this.boots.run(() => kernel.start(startupSignal))
+      const bootstrap = await kernel.execute(bootstrapCode(), {
+        signal: startupSignal,
         internal: true,
         maxOutputBytes: this.config.maxOutputBytes,
       })
-      await this.restore(slot, kernel, signal)
+      if (bootstrap.status !== 'ok') {
+        throw new Error(
+          `kernel bootstrap failed${bootstrap.error?.name === undefined ? '' : ` (${bootstrap.error.name})`}`,
+        )
+      }
+      await this.restore(slot, kernel, startupSignal)
+      if (this.disposed || slot.disposed || startupSignal.aborted)
+        throw new Error('RLM provider disposed during kernel startup')
       appendRlmSessionEvent(slot.agent.session, 'rlm/kernel-generation', {
         version: 1,
         generation,
@@ -343,6 +394,7 @@ export class JupyterRlmRuntime extends RlmRuntime {
       return kernel
     } catch (error) {
       if (slot.kernel === kernel) slot.kernel = undefined
+      abandonGeneration()
       await kernel.dispose().catch(() => undefined)
       throw error
     }
@@ -406,17 +458,23 @@ export class JupyterRlmRuntime extends RlmRuntime {
     this.assertAgent(request.agent)
     if (typeof request.code !== 'string') throw new TypeError('RLM code must be a string')
     const slot = this.slot(request.agent)
-    const kernel = await this.ensureReady(slot, request.signal)
-    const generation = slot.generation
+    const executionSignal = AbortSignal.any([request.signal, slot.lifetime.signal])
     slot.activeCalls += 1
     try {
+      const kernel = await this.ensureReady(slot, executionSignal)
+      const generation = slot.generation
+      const generationSignal = slot.generationLifetime?.signal
+      const cellSignal =
+        generationSignal === undefined
+          ? executionSignal
+          : AbortSignal.any([executionSignal, generationSignal])
       const result = await kernel.execute(
         applyShellSettings(request.code, {
           ...this.config,
           requireExplicitShell: process.platform === 'win32',
         }),
         {
-          signal: request.signal,
+          signal: cellSignal,
           maxOutputBytes: this.config.maxOutputBytes,
           callId: request.callId,
           ...(request.executionToken === undefined
@@ -433,7 +491,7 @@ export class JupyterRlmRuntime extends RlmRuntime {
         (this.config.snapshot.policy === 'after-cell' || this.config.snapshot.policy === 'idle') &&
         kernel.isRunning
       ) {
-        await this.captureSnapshot(slot, kernel, request.signal)
+        await this.captureSnapshot(slot, kernel, cellSignal)
       }
       return { ...result, generation }
     } finally {
@@ -513,9 +571,13 @@ export class JupyterRlmRuntime extends RlmRuntime {
     if (slot.kernel !== undefined && slot.activeCalls === 0) {
       await this.captureSnapshot(slot, slot.kernel, signal)
     }
+    const startup = slot.startup
+    slot.generationLifetime?.abort(new Error('RLM kernel restart requested'))
+    slot.generationLifetime = undefined
     const kernel = slot.kernel
     slot.kernel = undefined
     slot.state = 'disposing'
+    if (startup !== undefined) await startup.catch(() => undefined)
     if (kernel !== undefined) await kernel.dispose()
     slot.state = 'starting'
     this.emit(slot, 'restart')
@@ -524,6 +586,9 @@ export class JupyterRlmRuntime extends RlmRuntime {
   async disposeAgent(agent: Agent): Promise<void> {
     const slot = this.slots.get(agent.id)
     if (slot === undefined || slot.agent !== agent) return
+    slot.disposed = true
+    slot.lifetime.abort(new Error('RLM agent kernel disposed'))
+    slot.generationLifetime?.abort(new Error('RLM agent kernel disposed'))
     this.slots.delete(agent.id)
     await this.waitForQuiescentCalls(slot)
     if (slot.kernel !== undefined && slot.activeCalls === 0) {
@@ -540,6 +605,11 @@ export class JupyterRlmRuntime extends RlmRuntime {
     this.disposed = true
     const slots = [...this.slots.values()]
     this.slots.clear()
+    for (const slot of slots) {
+      slot.disposed = true
+      slot.lifetime.abort(new Error('RLM provider disposed'))
+      slot.generationLifetime?.abort(new Error('RLM provider disposed'))
+    }
     const settled = await Promise.allSettled(
       slots.map(async (slot) => {
         await this.waitForQuiescentCalls(slot)

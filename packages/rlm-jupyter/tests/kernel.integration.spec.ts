@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -80,6 +80,21 @@ describe('real persistent Jupyter transport', () => {
         status: 'error',
         error: { name: 'ValueError', message: 'bad value' },
       })
+      const cappedError = await first.execute("raise ValueError('bad value')", {
+        maxOutputBytes: 32,
+      })
+      const retainedError = [cappedError.error?.message, ...(cappedError.error?.traceback ?? [])]
+        .join('')
+        .replace(/\n\[\.\.\. output truncated at 32 bytes \.\.\.\]/gu, '')
+      expect(Buffer.byteLength(retainedError)).toBeLessThanOrEqual(32)
+      expect(JSON.stringify(cappedError.error)).toContain('truncated at 32 bytes')
+      const capped = await first.execute(
+        'import sys; sys.stdout.write("12345"); sys.stdout.flush(); sys.stderr.write("67890"); "later"',
+        { maxOutputBytes: 7 },
+      )
+      expect(capped.stdout).toBe('12345')
+      expect(capped.stderr).toBe('67\n[... output truncated at 7 bytes ...]')
+      expect(capped.result).toBeUndefined()
       const controller = new AbortController()
       const interrupted = first.execute('import time; time.sleep(30)', {
         maxOutputBytes: 1024 * 1024,
@@ -126,6 +141,27 @@ x = 41
       expect(await first.execute(historical, { maxOutputBytes: 1024 * 1024 })).toMatchObject({
         status: 'ok',
       })
+      expect(
+        await first.execute('del Path; del x; cap_value = b"x" * 40', {
+          maxOutputBytes: 1024 * 1024,
+        }),
+      ).toMatchObject({ status: 'ok' })
+      const cappedPayload = join(session, 'capped-state.dill')
+      const cappedManifest = join(session, 'capped-state.json')
+      const cappedCapture = await first.execute(
+        buildSnapshotCode(cappedPayload, cappedManifest, 64, 64, 'test'),
+        { maxOutputBytes: 1024 * 1024, internal: true },
+      )
+      expect(parseSnapshotCapture(cappedCapture.stdout)).toMatchObject({
+        skipped: expect.arrayContaining([
+          { name: 'cap_value', reason: 'exceeds aggregate snapshot size cap' },
+        ]),
+        bytes: expect.any(Number),
+      })
+      expect((await stat(cappedPayload)).size).toBeLessThanOrEqual(64)
+      expect(
+        await first.execute('del cap_value; x = 41', { maxOutputBytes: 1024 * 1024 }),
+      ).toMatchObject({ status: 'ok' })
       const captured = await first.execute(
         buildSnapshotCode(payload, manifest, 16 * 1024 * 1024, 4 * 1024 * 1024, 'test'),
         { maxOutputBytes: 1024 * 1024, internal: true },

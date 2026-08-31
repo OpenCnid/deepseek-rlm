@@ -37,9 +37,8 @@ import type { KernelHostRequestContext } from '../src/kernel.js'
 const contexts: Context[] = []
 const roots: string[] = []
 
-// The pinned DSH rc.7 build uses the ES2024 helper despite advertising the
-// spec's Node 20 floor. Keep this compatibility oracle local to the test; the
-// upstream compatibility finding is documented rather than hidden in runtime code.
+// The pinned DSH alpha.3 build uses the ES2024 helper. Keep this compatibility
+// oracle local to the test instead of hiding it in runtime code.
 if (typeof Promise.withResolvers !== 'function') {
   Promise.withResolvers = function withResolvers<T>(): PromiseWithResolvers<T> {
     let resolve!: (value: T | PromiseLike<T>) => void
@@ -54,7 +53,7 @@ if (typeof Promise.withResolvers !== 'function') {
 
 // The full bundle requires patch 0003. This compatibility-oracle test runs
 // against the pristine pin, so add only the missing public method and delegate
-// to rc.7's ordinary typed append; production code has no such fallback.
+// to alpha.3's ordinary typed append; production code has no such fallback.
 const sessionPrototype = Session.prototype as Session & {
   appendIgnorable?: (type: string, data: unknown) => unknown
 }

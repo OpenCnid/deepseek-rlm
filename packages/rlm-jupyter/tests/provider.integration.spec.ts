@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -13,6 +13,7 @@ import {
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import * as spawnProvider from '@deepseek-ai/dsh-subagent-spawn-in-process'
@@ -105,6 +106,59 @@ class IpythonLoopAdapter extends LlmAdapter {
 }
 
 describe('Jupyter RLM provider recovery', () => {
+  it('fences lazy startup across Agent disposal and restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-rlm-startup-dispose-'))
+    roots.push(root)
+    const ctx = new Context()
+    contexts.push(ctx)
+    await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(SessionProjectionRegistry)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    await ctx.plugin(SubagentRuntime)
+    await ctx.plugin(spawnProvider, { providerName: 'rlm-spawn' })
+    const agent = ctx.agentLoop.create(SessionId('provider-startup-dispose'), {
+      provider: 'unused',
+      model: 'unused',
+    })
+    await ctx.plugin(JupyterRlmRuntime, {
+      artifactRoot: join(root, 'artifacts'),
+      managedRuntimeRoot: resolve('.dsh-rlm/test-runtime'),
+      subagentProvider: 'rlm-spawn',
+    })
+    const pending = ctx.rlm.execute({
+      agent,
+      callId: ToolCallId('startup-dispose-cell'),
+      code: '41 + 1',
+      signal: new AbortController().signal,
+    })
+    const rejected = expect(pending).rejects.toThrow(/disposed|disposing/u)
+
+    await ctx.rlm.disposeAgent(agent)
+    await rejected
+    expect(ctx.rlm.info(agent)).toBeUndefined()
+
+    const restarting = ctx.rlm.execute({
+      agent,
+      callId: ToolCallId('startup-restart-cell'),
+      code: '40 + 1',
+      signal: new AbortController().signal,
+    })
+    const restartOutcome = restarting.then(
+      (result) => result.status,
+      () => 'rejected' as const,
+    )
+    await ctx.rlm.restart(agent)
+    expect(await restartOutcome).not.toBe('ok')
+    await expect(
+      ctx.rlm.execute({
+        agent,
+        callId: ToolCallId('post-startup-restart-cell'),
+        code: '40 + 2',
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toMatchObject({ status: 'ok', result: '42' })
+  }, 120_000)
+
   it('dispatches a nested Python tool call through the optional live DSH tools service', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-rlm-tools-adapter-'))
     roots.push(root)
@@ -298,5 +352,93 @@ x = 41
     ).toMatchObject({ status: 'ok', result: '42', generation: 1 })
     expect(await readFile(sideEffect, 'utf8')).toBe('1')
     expect(agent.session.events.some((event) => event.type === 'rlm/kernel-restore')).toBe(true)
+  }, 120_000)
+
+  it('restores a reconstructed Agent from durable DSH session events and artifacts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-rlm-process-recovery-'))
+    roots.push(root)
+    const persistenceRoot = join(root, 'sessions')
+    const artifactRoot = join(root, 'artifacts')
+    const sessionId = SessionId('provider-process-recovery')
+    const providerConfig = {
+      artifactRoot,
+      managedRuntimeRoot: resolve('.dsh-rlm/test-runtime'),
+      subagentProvider: 'rlm-spawn',
+    }
+
+    const first = new Context()
+    contexts.push(first)
+    await mountAgentLoopTestDependencies(first)
+    await first.plugin(SessionProjectionRegistry)
+    await first.plugin(AgentLoop, { agents: [] })
+    await first.plugin(JsonlSessionPersistence, {
+      root: persistenceRoot,
+      compression: 'none',
+      writeBatchMaxDelayMs: 1,
+    })
+    await first.plugin(SubagentRuntime)
+    await first.plugin(spawnProvider, { providerName: 'rlm-spawn' })
+    await first.plugin(JupyterRlmRuntime, providerConfig)
+    const original = first.agentLoop.create(sessionId, {
+      provider: 'unused',
+      model: 'unused',
+    })
+    await expect(
+      first.rlm.execute({
+        agent: original,
+        callId: ToolCallId('persisted-first-cell'),
+        code: 'x = 41',
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toMatchObject({ status: 'ok' })
+    await first.sessions.flush(original.session)
+    await first.fiber.dispose()
+    contexts.splice(contexts.indexOf(first), 1)
+
+    // Workspace dependencies are the pristine published alpha.3 packages. The
+    // production bundle requires patch 0003, whose upstream tests verify that
+    // appendIgnorable persists this flag. Mirror only that public envelope fact
+    // here so the unpatched compatibility fixture can exercise cold recovery.
+    const transcript = join(persistenceRoot, '_no-cwd', String(sessionId), 'session.jsonl')
+    const records = (await readFile(transcript, 'utf8'))
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    for (const record of records) {
+      if (typeof record.type === 'string' && record.type.startsWith('rlm/')) {
+        record.ignorable = true
+      }
+    }
+    await writeFile(transcript, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`)
+
+    const resumed = new Context()
+    contexts.push(resumed)
+    await mountAgentLoopTestDependencies(resumed)
+    await resumed.plugin(SessionProjectionRegistry)
+    await resumed.plugin(AgentLoop, { agents: [] })
+    await resumed.plugin(JsonlSessionPersistence, {
+      root: persistenceRoot,
+      compression: 'none',
+      writeBatchMaxDelayMs: 1,
+    })
+    await resumed.plugin(SubagentRuntime)
+    await resumed.plugin(spawnProvider, { providerName: 'rlm-spawn' })
+    const handle = await resumed.agents.resume({
+      resumeSessionId: sessionId,
+      agentOptions: { provider: 'unused', model: 'unused' },
+    })
+    await resumed.plugin(JupyterRlmRuntime, providerConfig)
+
+    await expect(
+      resumed.rlm.execute({
+        agent: handle.agent,
+        callId: ToolCallId('persisted-restored-cell'),
+        code: 'x + 1',
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toMatchObject({ status: 'ok', result: '42', generation: 1 })
+    expect(handle.agent.session.events.some((event) => event.type === 'rlm/kernel-restore')).toBe(
+      true,
+    )
   }, 120_000)
 })

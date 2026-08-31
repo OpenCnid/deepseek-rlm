@@ -104,7 +104,8 @@ records["passed"] + records["failed"]  # 42
 ```
 
 Snapshots serialize values independently with `dill`. Missing, corrupt, or
-oversized values are reported and skipped; old cells are never replayed.
+oversized values are reported and skipped, the final payload is held to the
+configured aggregate cap, and old cells are never replayed.
 
 ## Delegate to a child agent
 
