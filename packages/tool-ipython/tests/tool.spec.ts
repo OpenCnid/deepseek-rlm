@@ -1,6 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { type ToolRunContext } from '@deepseek-ai/dsh-tools'
@@ -43,7 +43,7 @@ async function setup(): Promise<{ ctx: Context; runtime: StubRuntime }> {
 }
 
 function execution(agent: Agent): ToolRunContext {
-  const callId = CallId('ipython-call')
+  const callId = ToolCallId('ipython-call')
   return {
     agent,
     callId,

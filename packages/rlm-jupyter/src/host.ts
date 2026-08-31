@@ -2,7 +2,7 @@ import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentOptions } from '@deepseek-ai/dsh-agent'
-import { CallId, ReasoningEffortId, type ContentBlock } from '@deepseek-ai/dsh-llm'
+import { ReasoningEffortId, ToolCallId, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SubagentListEntry } from '@deepseek-ai/dsh-subagent'
 import type { ToolExecutionToken } from '@deepseek-ai/dsh-tools'
@@ -12,7 +12,6 @@ import type { ResolvedConfig } from './config.js'
 
 interface PatchedSubagentCapabilities {
   readonly deletion: boolean
-  readonly reasoningEffort: boolean
 }
 
 interface DeletedSubagent {
@@ -21,7 +20,6 @@ interface DeletedSubagent {
 }
 
 interface PatchedSubagents {
-  supportsContinuableReasoningEffort?(): boolean
   deleteContinuable?(
     parent: Agent,
     childId: SessionId,
@@ -82,7 +80,6 @@ function patchedCapabilities(ctx: Context): PatchedSubagentCapabilities {
   const patched = ctx.subagents as typeof ctx.subagents & PatchedSubagents
   return {
     deletion: typeof patched.deleteContinuable === 'function',
-    reasoningEffort: patched.supportsContinuableReasoningEffort?.() === true,
   }
 }
 
@@ -268,12 +265,6 @@ export class HostBridge {
         throw new HostRequestError(
           `reasoning effort ${JSON.stringify(thinking)} is not supported by ${provider}/${model}`,
           'REASONING_UNAVAILABLE',
-        )
-      }
-      if (!patchedCapabilities(this.ctx).reasoningEffort) {
-        throw new HostRequestError(
-          'this DeepSeek Harness build cannot persist a child reasoning effort before its first request',
-          'UNSUPPORTED_REASONING_EFFORT',
         )
       }
       ;(options as AgentOptions & { reasoningEffort: ReasoningEffortId }).reasoningEffort =
@@ -499,7 +490,7 @@ export class HostBridge {
         )
       }
       const messageId = await this.ctx.subagents.reportFrom(agent, content, {
-        delivery: 'wakeup',
+        delivery: 'next-step',
         signal: request.signal,
       })
       return { message_id: messageId, receiver_role: role }
@@ -564,8 +555,8 @@ export class HostBridge {
     const count = (this.nestedCallCounts.get(execution.callId) ?? 0) + 1
     this.nestedCallCounts.set(execution.callId, count)
     const result = await tools.execute({
-      callId: CallId(`${execution.callId}:rlm:${count}`),
-      rootCallId: CallId(execution.callId),
+      callId: ToolCallId(`${execution.callId}:rlm:${count}`),
+      rootCallId: ToolCallId(execution.callId),
       name,
       arguments: arguments_,
       agent,

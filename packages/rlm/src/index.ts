@@ -1,7 +1,7 @@
 /** Cordis Service Definition for one persistent RLM kernel per DSH Agent. */
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { CallId } from '@deepseek-ai/dsh-llm'
+import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEventMap, SessionId } from '@deepseek-ai/dsh-session'
 
 /** One streamed text fragment from a running IPython cell. */
@@ -13,7 +13,7 @@ export interface RlmOutputChunk {
 /** Inputs needed to run one model-visible IPython call. */
 export interface RlmExecuteRequest {
   readonly agent: Agent
-  readonly callId: CallId
+  readonly callId: ToolCallId
   readonly code: string
   readonly signal: AbortSignal
   /** Opaque enclosing DSH tool execution, used only for policy-preserving nested dispatch. */
@@ -99,7 +99,7 @@ declare module '@deepseek-ai/cordis' {
     /** @mode emit */
     'rlm/output'(event: {
       readonly agent: Agent
-      readonly callId: CallId
+      readonly callId: ToolCallId
       readonly chunk: RlmOutputChunk
     }): void
   }

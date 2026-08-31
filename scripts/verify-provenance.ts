@@ -9,9 +9,9 @@ interface VendorManifest {
 }
 
 const root = resolve(import.meta.dirname, '..')
-const expectedDshRevision = '99f6f02fecdb7dff40c3fbc9470f5907c29f74ca'
+const expectedDshRevision = 'dd6322d604e00eec1ba5e0c8541159906a21094a'
 const expectedPrimeRevision = 'f8f0036cc2da1a640aad990ae8dcb7c4820ce32e'
-const expectedDshVersion = '0.1.0-rc.7'
+const expectedDshVersion = '0.1.2-alpha.3'
 
 function parseJson<T>(text: string, path: string): T {
   try {

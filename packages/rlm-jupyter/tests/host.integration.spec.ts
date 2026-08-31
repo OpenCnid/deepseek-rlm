@@ -19,6 +19,7 @@ import {
   type SessionPreparation,
 } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import SessionQueryEngine from '@deepseek-ai/dsh-session-query'
 import SessionPersistence, {
   PersistenceCoordinator,
   SessionPersistenceRevision,
@@ -102,6 +103,17 @@ class LocalAdapter extends LlmAdapter {
     yield { type: 'text-delta', index: 0, text: 'READY' }
     yield { type: 'block-end', index: 0, block: { type: 'text', text: 'READY' } }
     yield { type: 'finish', reason: 'stop' }
+  }
+}
+
+/** Session-query implementation for exact live/persisted reads used by subagent listing. */
+class TestSessionQuery extends SessionQueryEngine {
+  override searchSessions(): Promise<never> {
+    return Promise.reject(new Error('session search is not configured in this test'))
+  }
+
+  override searchEvents(): Promise<never> {
+    return Promise.reject(new Error('event search is not configured in this test'))
   }
 }
 
@@ -265,6 +277,7 @@ describe('native DSH continuation host bridge', () => {
     await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(MemoryPersistence)
     await ctx.plugin(AgentLoop, { agents: [] })
+    await ctx.plugin(TestSessionQuery)
     await ctx.plugin(SubagentRuntime)
     await ctx.plugin(spawnProvider, { providerName: 'rlm-spawn' })
     const adapter = new LocalAdapter()
@@ -295,14 +308,6 @@ describe('native DSH continuation host bridge', () => {
       bridge.dispatch(
         parent,
         'rlm.run',
-        { prompt: 'unsupported reasoning', kwargs: { thinking: 'low' } },
-        request(),
-      ),
-    ).rejects.toMatchObject({ code: 'UNSUPPORTED_REASONING_EFFORT' })
-    await expect(
-      bridge.dispatch(
-        parent,
-        'rlm.run',
         { prompt: 'missing model', kwargs: { model: 'missing/local' } },
         request(),
       ),
@@ -314,7 +319,7 @@ describe('native DSH continuation host bridge', () => {
     const admission = bridge.dispatch(
       parent,
       'rlm.run',
-      { prompt: 'reply with READY', kwargs: { name: 'worker' } },
+      { prompt: 'reply with READY', kwargs: { name: 'worker', thinking: 'low' } },
       request(),
     )
     const handle = await Promise.race([
@@ -354,6 +359,7 @@ describe('native DSH continuation host bridge', () => {
       adapter.release()
     }
     await child!.whenIdle()
+    expect(child!.session.requestHeader()?.config.reasoningEffort).toBe('low')
     const listed = await bridge.dispatch(parent, 'rlm.list_subagents', {}, request())
     expect(listed.subagents).toEqual([
       expect.objectContaining({
@@ -377,6 +383,7 @@ describe('native DSH continuation host bridge', () => {
     await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(MemoryPersistence)
     await ctx.plugin(AgentLoop, { agents: [] })
+    await ctx.plugin(TestSessionQuery)
     await ctx.plugin(SubagentRuntime)
     await ctx.plugin(spawnProvider, { providerName: 'rlm-spawn' })
     const adapter = new RoutedBlockingAdapter()
@@ -446,6 +453,7 @@ describe('native DSH continuation host bridge', () => {
     await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(MemoryPersistence)
     await ctx.plugin(AgentLoop, { agents: [] })
+    await ctx.plugin(TestSessionQuery)
     await ctx.plugin(SubagentRuntime)
     await ctx.plugin(spawnProvider, { providerName: 'rlm-spawn' })
     const adapter = new BlockingAdapter()

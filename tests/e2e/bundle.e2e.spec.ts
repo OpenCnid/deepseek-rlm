@@ -162,7 +162,7 @@ describe('installable DSH bundle', () => {
       expect(manifest.dependencies?.[name]).toBeDefined()
     }
     expect(manifest.peerDependencies?.['@deepseek-ai/dsh-subagent-spawn-in-process']).toBe(
-      '0.1.0-rc.7',
+      '0.1.2-alpha.3',
     )
     expect(
       Object.keys(manifest.dependencies ?? {}).filter(
@@ -215,18 +215,14 @@ describe('installable DSH bundle', () => {
     expect(python).not.toMatch(/\b(?:openai|anthropic|litellm)\b|requests\.(?:post|get)\s*\(/iu)
   })
 
-  it('ships the two full-parity patches plus the downstream-event prerequisite', async () => {
+  it('ships deletion and downstream-event patches while using native reasoning support', async () => {
     const patches = await Promise.all(
-      [
-        '0001-persisted-child-reasoning-effort.patch',
-        '0002-continuable-child-deletion.patch',
-        '0003-public-ignorable-session-events.patch',
-      ].map((name) => readFile(resolve(root, 'patches/deepseek-harness', name), 'utf8')),
+      ['0002-continuable-child-deletion.patch', '0003-public-ignorable-session-events.patch'].map(
+        (name) => readFile(resolve(root, 'patches/deepseek-harness', name), 'utf8'),
+      ),
     )
-    expect(patches[0]).toContain('supportsContinuableReasoningEffort')
-    expect(patches[0]).toContain('resolveModelInfo')
-    expect(patches[1]).toContain('deleteContinuable')
-    expect(patches[1]).toContain("'subagent/deleted'")
-    expect(patches[2]).toContain('appendIgnorable')
+    expect(patches[0]).toContain('deleteContinuable')
+    expect(patches[0]).toContain("'subagent/deleted'")
+    expect(patches[1]).toContain('appendIgnorable')
   })
 })

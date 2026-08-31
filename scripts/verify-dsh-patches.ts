@@ -6,9 +6,8 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 const root = resolve(import.meta.dirname, '..')
-const revision = '99f6f02fecdb7dff40c3fbc9470f5907c29f74ca'
+const revision = 'dd6322d604e00eec1ba5e0c8541159906a21094a'
 const names = [
-  '0001-persisted-child-reasoning-effort.patch',
   '0002-continuable-child-deletion.patch',
   '0003-public-ignorable-session-events.patch',
 ]

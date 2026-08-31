@@ -5,7 +5,7 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import {
-  CallId,
+  ToolCallId,
   createUserMessage,
   LlmAdapter,
   type GenerateOptions,
@@ -13,6 +13,7 @@ import {
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import * as spawnProvider from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -52,7 +53,7 @@ afterEach(async () => {
 })
 
 function toolCall(callId: string, code: string): StreamChunk[] {
-  const id = CallId(callId)
+  const id = ToolCallId(callId)
   const argumentsJson = JSON.stringify({ code })
   return [
     { type: 'block-start', index: 0, blockType: 'tool-call' },
@@ -110,6 +111,7 @@ describe('Jupyter RLM provider recovery', () => {
     const ctx = new Context()
     contexts.push(ctx)
     await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(AgentLoop, { agents: [] })
     await ctx.plugin(SubagentRuntime)
     await ctx.plugin(spawnProvider, { providerName: 'rlm-spawn' })
@@ -154,7 +156,7 @@ describe('Jupyter RLM provider recovery', () => {
     await ctx.plugin(ipythonTool)
 
     const result = await ctx.tools.execute({
-      callId: CallId('nested-probe-cell'),
+      callId: ToolCallId('nested-probe-cell'),
       name: 'ipython',
       arguments: {
         code: `
@@ -184,6 +186,7 @@ del _probe
     const ctx = new Context()
     contexts.push(ctx)
     await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(AgentLoop, { agents: [] })
     await ctx.plugin(SubagentRuntime)
     await ctx.plugin(spawnProvider, { providerName: 'rlm-spawn' })
@@ -236,6 +239,7 @@ del _probe
     const ctx = new Context()
     contexts.push(ctx)
     await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(AgentLoop, { agents: [] })
     await ctx.plugin(SubagentRuntime)
     await ctx.plugin(spawnProvider, { providerName: 'rlm-spawn' })
@@ -253,7 +257,7 @@ del _probe
     expect(
       await ctx.rlm.execute({
         agent,
-        callId: CallId('first-cell'),
+        callId: ToolCallId('first-cell'),
         code: `
 from pathlib import Path
 _p = Path(${JSON.stringify(sideEffect)})
@@ -267,7 +271,7 @@ x = 41
     const controller = new AbortController()
     const interrupted = ctx.rlm.execute({
       agent,
-      callId: CallId('interrupted-cell'),
+      callId: ToolCallId('interrupted-cell'),
       code: 'import time; time.sleep(30)',
       signal: controller.signal,
     })
@@ -276,7 +280,7 @@ x = 41
     await expect(
       ctx.rlm.execute({
         agent,
-        callId: CallId('post-interrupt-cell'),
+        callId: ToolCallId('post-interrupt-cell'),
         code: 'x + 1',
         signal: new AbortController().signal,
       }),
@@ -287,7 +291,7 @@ x = 41
     expect(
       await ctx.rlm.execute({
         agent,
-        callId: CallId('restored-cell'),
+        callId: ToolCallId('restored-cell'),
         code: 'x + 1',
         signal: new AbortController().signal,
       }),

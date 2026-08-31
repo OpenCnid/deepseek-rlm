@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
+import { stringify } from 'yaml'
 
 const execFileAsync = promisify(execFile)
 const root = resolve(import.meta.dirname, '..')
@@ -33,11 +34,14 @@ try {
         private: true,
         type: 'module',
         dependencies: specifications,
-        pnpm: { overrides: specifications },
       },
       null,
       2,
     )}\n`,
+  )
+  await writeFile(
+    join(temporary, 'pnpm-workspace.yaml'),
+    stringify({ packages: ['.'], overrides: specifications }),
   )
   await execFileAsync(process.execPath, [pnpm, 'install', '--ignore-scripts'], {
     cwd: temporary,

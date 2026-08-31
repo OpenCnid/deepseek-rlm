@@ -24,8 +24,8 @@ for (const directory of packageDirs) {
     ...manifest.dependencies,
     ...manifest.peerDependencies,
   })) {
-    if (name.startsWith('@deepseek-ai/dsh-') && version !== '0.1.0-rc.7') {
-      throw new Error(`${manifest.name}: ${name} must be 0.1.0-rc.7`)
+    if (name.startsWith('@deepseek-ai/dsh-') && version !== '0.1.2-alpha.3') {
+      throw new Error(`${manifest.name}: ${name} must be 0.1.2-alpha.3`)
     }
   }
 }
@@ -50,6 +50,7 @@ for (const dependency of [
   '@deepseek-ai/dsh-agent',
   '@deepseek-ai/dsh-llm',
   '@deepseek-ai/dsh-session',
+  '@deepseek-ai/dsh-session-query',
   '@deepseek-ai/dsh-subagent',
   '@deepseek-ai/dsh-subagent-spawn-in-process',
   '@deepseek-ai/dsh-system-prompt',

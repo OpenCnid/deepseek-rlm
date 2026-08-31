@@ -15,10 +15,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
         with:
-          version: 9.14.4
+          version: 11.7.0
       - uses: actions/setup-node@v4
         with:
-          node-version: '20.19.2'
+          node-version: '24'
           cache: pnpm
       - uses: actions/setup-python@v5
         with:
@@ -35,19 +35,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
       - uses: pnpm/action-setup@v4
         with:
-          version: 9.14.4
+          version: 11.7.0
       - run: pnpm install --frozen-lockfile
       - run: git clone https://github.com/deepseek-ai/deepseek-harness.git /tmp/deepseek-harness
-      - run: git -C /tmp/deepseek-harness checkout 99f6f02fecdb7dff40c3fbc9470f5907c29f74ca
+      - run: git -C /tmp/deepseek-harness checkout dd6322d604e00eec1ba5e0c8541159906a21094a
       - run: pnpm verify:patches
         env:
           DSH_SOURCE: /tmp/deepseek-harness
       - name: Apply patches to pinned DSH checkout
         run: |
-          git -C /tmp/deepseek-harness apply "$GITHUB_WORKSPACE/patches/deepseek-harness/0001-persisted-child-reasoning-effort.patch"
           git -C /tmp/deepseek-harness apply "$GITHUB_WORKSPACE/patches/deepseek-harness/0002-continuable-child-deletion.patch"
           git -C /tmp/deepseek-harness apply "$GITHUB_WORKSPACE/patches/deepseek-harness/0003-public-ignorable-session-events.patch"
       - run: pnpm dlx pnpm@11.7.0 --dir /tmp/deepseek-harness install --frozen-lockfile
