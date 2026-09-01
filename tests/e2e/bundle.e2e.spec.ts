@@ -215,14 +215,20 @@ describe('installable DSH bundle', () => {
     expect(python).not.toMatch(/\b(?:openai|anthropic|litellm)\b|requests\.(?:post|get)\s*\(/iu)
   })
 
-  it('ships deletion and downstream-event patches while using native reasoning support', async () => {
+  it('ships the capability and lifecycle patches while using native reasoning support', async () => {
     const patches = await Promise.all(
-      ['0002-continuable-child-deletion.patch', '0003-public-ignorable-session-events.patch'].map(
-        (name) => readFile(resolve(root, 'patches/deepseek-harness', name), 'utf8'),
-      ),
+      [
+        '0002-continuable-child-deletion.patch',
+        '0003-public-ignorable-session-events.patch',
+        '0004-pi-ai-agent-session-cleanup.patch',
+        '0005-bounded-process-shutdown.patch',
+      ].map((name) => readFile(resolve(root, 'patches/deepseek-harness', name), 'utf8')),
     )
     expect(patches[0]).toContain('deleteContinuable')
     expect(patches[0]).toContain("'subagent/deleted'")
     expect(patches[1]).toContain('appendIgnorable')
+    expect(patches[2]).toContain('cleanupSessionResources')
+    expect(patches[2]).toContain('AgentOwnedPiAiAdapter')
+    expect(patches[3]).toContain('timeout?.unref()')
   })
 })

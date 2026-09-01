@@ -67,7 +67,7 @@ Results:
 - Python bridge and selected pinned Prime runtime tests: 62 passed, 2
   documented compatibility cases deselected;
 - provenance: exact DSH and Prime pins plus all 10 vendored-file digests passed;
-- patch application and diff hygiene: both patches passed against the exact DSH
+- patch application and diff hygiene: both RLM capability patches passed against the exact DSH
   revision;
 - package dependency/peer closure: all five packages passed;
 - real Jupyter/DSH integration: 3 files, 11 tests passed;

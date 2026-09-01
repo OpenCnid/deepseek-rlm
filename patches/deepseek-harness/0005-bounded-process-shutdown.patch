@@ -1,0 +1,67 @@
+diff --git a/apps/cli/src/process-shutdown.ts b/apps/cli/src/process-shutdown.ts
+index e34f85f7f..bf6a3d1e8 100644
+--- a/apps/cli/src/process-shutdown.ts
++++ b/apps/cli/src/process-shutdown.ts
+@@ -1,4 +1,4 @@
+-/** Bounded, escalating process shutdown for the long-lived CLI surfaces. */
++/** Bounded, escalating process shutdown for every CLI surface. */
+
+ /** Maximum grace allowed for the application tree to dispose before process exit. */
+ export const PROCESS_SHUTDOWN_TIMEOUT_MS = 5_000
+@@ -45,8 +45,12 @@ export function createProcessShutdown(
+   const completeOnce = (code: number): void => {
+     if (completed || forceExited) return
+     completed = true
+-    clearExitTimeout()
+     complete(code)
++    // The disposed tree no longer needs this timer to keep Node alive. Leave
++    // it armed as a backstop for transports whose public close completed but
++    // whose OS handle is still referenced; a genuinely quiescent process exits
++    // naturally without waiting for it.
++    timeout?.unref()
+   }
+
+   const start = (code: number, forceAfterDispose: boolean): Promise<void> => {
+diff --git a/apps/cli/tests/process-shutdown.spec.ts b/apps/cli/tests/process-shutdown.spec.ts
+index 95e54fe75..328c5fda3 100644
+--- a/apps/cli/tests/process-shutdown.spec.ts
++++ b/apps/cli/tests/process-shutdown.spec.ts
+@@ -20,7 +20,7 @@ afterEach(() => {
+ })
+
+ describe('process shutdown', () => {
+-  it('completes naturally after disposal resolves and forces exit when it rejects', async () => {
++  it('records natural completion after disposal resolves and forces exit when it rejects', async () => {
+     const resolvedExit = vi.fn()
+     const resolvedComplete = vi.fn()
+     const resolved = createProcessShutdown(() => Promise.resolve(), resolvedExit, resolvedComplete)
+@@ -43,6 +43,7 @@ describe('process shutdown', () => {
+   })
+
+   it('uses process.exitCode for default normal completion', async () => {
++    vi.useFakeTimers()
+     const exit = vi.spyOn(process, 'exit').mockImplementation(_code => undefined as never)
+     const originalExitCode = process.exitCode
+     process.exitCode = undefined
+@@ -58,6 +59,21 @@ describe('process shutdown', () => {
+     }
+   })
+
++  it('leaves an unrefed force-exit bound after disposal for a referenced external handle', async () => {
++    vi.useFakeTimers()
++    const exit = vi.fn()
++    const complete = vi.fn()
++    const shutdown = createProcessShutdown(() => Promise.resolve(), exit, complete)
++
++    await shutdown.shutdown(0)
++    expect(complete).toHaveBeenCalledOnce()
++    expect(exit).not.toHaveBeenCalled()
++
++    await vi.advanceTimersByTimeAsync(PROCESS_SHUTDOWN_TIMEOUT_MS)
++    expect(exit).toHaveBeenCalledOnce()
++    expect(exit).toHaveBeenCalledWith(0)
++  })
++
+   it('forces exit when graceful disposal reaches its bound', async () => {
+     vi.useFakeTimers()
+     const disposal = deferred()
