@@ -1,6 +1,16 @@
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { access, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import {
+  access,
+  cp,
+  copyFile,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import {
   DSH_RLM_BRIDGE_PROTOCOL_VERSION,
@@ -12,6 +22,13 @@ import {
 const runtimeMarkerVersion = 1
 const provisionOutputLimit = 64 * 1024
 const provisions = new Map<string, Promise<string>>()
+
+/** Runtime assets copied to a path that Python build backends can address safely. */
+interface StagedPythonRuntimeAssets {
+  readonly primeRuntime: string
+  readonly dshRuntime: string
+  readonly requirementsLock: string
+}
 
 interface RuntimeMarker {
   readonly version: number
@@ -35,6 +52,37 @@ function executableIn(environment: string): string {
   return process.platform === 'win32'
     ? join(environment, 'Scripts', 'python.exe')
     : join(environment, 'bin', 'python')
+}
+
+/**
+ * Copy package-owned Python projects out of package-manager store paths before
+ * asking a Python build backend to consume them. On Windows, hatchling can
+ * misresolve project roots reached through pnpm virtual-store paths containing
+ * scoped-package `+` segments and then report that a present `[project]` table
+ * is missing. A short RLM-owned staging path also keeps the build independent
+ * of symlink and package-manager layout details.
+ */
+export async function stagePythonRuntimeAssets(
+  assets: StagedPythonRuntimeAssets,
+  destination: string,
+): Promise<StagedPythonRuntimeAssets> {
+  const staged = {
+    primeRuntime: join(destination, 'upstream-runtime'),
+    dshRuntime: join(destination, 'dsh-rlm-runtime'),
+    requirementsLock: join(destination, 'managed-requirements.lock'),
+  }
+  await mkdir(destination, { recursive: true })
+  try {
+    await Promise.all([
+      cp(assets.primeRuntime, staged.primeRuntime, { recursive: true }),
+      cp(assets.dshRuntime, staged.dshRuntime, { recursive: true }),
+      copyFile(assets.requirementsLock, staged.requirementsLock),
+    ])
+    return staged
+  } catch (error) {
+    await rm(destination, { recursive: true, force: true })
+    throw error
+  }
 }
 
 async function command(
@@ -149,17 +197,19 @@ async function provision(
   const rootInfo = await stat(root)
   if (!rootInfo.isDirectory()) throw new Error(`managedRuntimeRoot is not a directory: ${root}`)
   const temporary = join(root, `.python-${expected.pythonVersion}-${randomUUID()}`)
+  const temporarySources = join(root, `.sources-${randomUUID()}`)
   const old = join(root, `.retired-${randomUUID()}`)
   await command('uv', ['venv', '--python', expected.pythonVersion, temporary])
   const temporaryPython = executableIn(temporary)
   try {
+    const staged = await stagePythonRuntimeAssets(assets, temporarySources)
     await command('uv', [
       'pip',
       'install',
       '--python',
       temporaryPython,
       '--requirement',
-      assets.requirementsLock,
+      staged.requirementsLock,
     ])
     await command('uv', [
       'pip',
@@ -167,8 +217,8 @@ async function provision(
       '--python',
       temporaryPython,
       '--no-deps',
-      assets.primeRuntime,
-      assets.dshRuntime,
+      staged.primeRuntime,
+      staged.dshRuntime,
     ])
     await probe(temporaryPython, probeEnvironment)
     await writeFile(join(temporary, 'runtime.json'), `${JSON.stringify(expected, null, 2)}\n`, {
@@ -194,6 +244,8 @@ async function provision(
   } catch (error) {
     await rm(temporary, { recursive: true, force: true })
     throw error
+  } finally {
+    await rm(temporarySources, { recursive: true, force: true })
   }
 }
 

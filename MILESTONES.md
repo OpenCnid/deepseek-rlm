@@ -170,6 +170,8 @@ For the selected `dsh-v0.1.2-alpha.3` baseline:
 | `0001-persisted-child-reasoning-effort` | Removed: the generic agent and continuable descriptor carry reasoning effort on alpha.3; integration tests verify first-request propagation.                                                                            |
 | `0002-continuable-child-deletion`       | Rebased unchanged for the current preview. Propose upstream; Milestone 2 makes deletion optional until a public equivalent lands.                                                                                       |
 | `0003-public-ignorable-session-events`  | Rebased for the current preview. Milestone 2 moves minimum snapshot authority to `ctx.storageDomain`; Milestone 3 expands that schema, eliminating this mandatory patch. Propose the generic writer upstream if useful. |
+| `0004-pi-ai-agent-session-cleanup`      | Adapted from the DSH reference lifecycle fix. Propose upstream or select a baseline that releases provider session resources by exact Agent/Session ownership.                                                          |
+| `0005-bounded-process-shutdown`         | Project-authored bounded-exit fix. Propose upstream or select a baseline whose headless CLI cannot be held open by a referenced transport handle after full tree disposal.                                              |
 
 ### Work
 
@@ -190,6 +192,9 @@ For the selected `dsh-v0.1.2-alpha.3` baseline:
 - Submit independently reviewable upstream changes for generic missing seams.
   Each upstream PR must have DSH-native motivation and tests, not depend on RLM
   terminology, and remain useful to other plugins.
+- Upstream the provider-resource ownership and bounded CLI shutdown fixes as
+  independently reviewable lifecycle changes, or select a baseline with
+  equivalent tested behavior.
 - Remove patch application from normal installation and CI. Retain the old
   patch files only in a clearly labeled legacy branch or release artifact if
   existing preview users still need them.

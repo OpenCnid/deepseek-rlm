@@ -1,0 +1,1365 @@
+diff --git a/packages/llm/llm-pi-ai/package.json b/packages/llm/llm-pi-ai/package.json
+index 3bed504db..086f619db 100644
+--- a/packages/llm/llm-pi-ai/package.json
++++ b/packages/llm/llm-pi-ai/package.json
+@@ -33,6 +33,7 @@
+   "license": "MIT",
+   "peerDependencies": {
+     "@deepseek-ai/cordis": "workspace:^",
++    "@deepseek-ai/dsh-agent": "workspace:^",
+     "@deepseek-ai/dsh-attachment": "workspace:^",
+     "@deepseek-ai/dsh-authorization": "workspace:^",
+     "@deepseek-ai/dsh-credentials": "workspace:^",
+@@ -40,6 +41,7 @@
+     "@deepseek-ai/dsh-invariants": "workspace:^",
+     "@deepseek-ai/dsh-launch-environment": "workspace:^",
+     "@deepseek-ai/dsh-llm": "workspace:^",
++    "@deepseek-ai/dsh-session": "workspace:^",
+     "@deepseek-ai/dsh-settings": "workspace:^",
+     "@deepseek-ai/dsh-timeout": "workspace:^"
+   },
+@@ -51,6 +53,8 @@
+   },
+   "devDependencies": {
+     "@deepseek-ai/cordis": "workspace:^",
++    "@deepseek-ai/dsh-agent": "workspace:^",
++    "@deepseek-ai/dsh-agent-loop": "workspace:^",
+     "@deepseek-ai/dsh-attachment": "workspace:^",
+     "@deepseek-ai/dsh-authorization": "workspace:^",
+     "@deepseek-ai/dsh-credentials": "workspace:^",
+@@ -59,7 +63,11 @@
+     "@deepseek-ai/dsh-launch-environment": "workspace:^",
+     "@deepseek-ai/dsh-llm": "workspace:^",
+     "@deepseek-ai/dsh-llm-deepseek": "workspace:^",
++    "@deepseek-ai/dsh-session": "workspace:^",
++    "@deepseek-ai/dsh-session-projection": "workspace:^",
+     "@deepseek-ai/dsh-settings": "workspace:^",
++    "@deepseek-ai/dsh-system-prompt": "workspace:^",
++    "@deepseek-ai/dsh-tools": "workspace:^",
+     "@deepseek-ai/dsh-timeout": "workspace:^"
+   }
+ }
+diff --git a/packages/llm/llm-pi-ai/src/index.ts b/packages/llm/llm-pi-ai/src/index.ts
+index f3cdc1d6a..457c76b96 100644
+--- a/packages/llm/llm-pi-ai/src/index.ts
++++ b/packages/llm/llm-pi-ai/src/index.ts
+@@ -55,14 +55,24 @@
+  * @module @deepseek-ai/dsh-llm-pi-ai
+  */
+
++import { cleanupSessionResources } from '@earendil-works/pi-ai'
+ import type { Context } from '@deepseek-ai/cordis'
++import type { Agent } from '@deepseek-ai/dsh-agent'
+ import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
+ import { assertUsableApiKey, LlmError, resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm'
+-import type { AdapterRegistrationHandle, DirectoryRegistrationHandle, LlmConfigurableProvider } from '@deepseek-ai/dsh-llm'
++import type {
++  AdapterRegistrationHandle,
++  DirectoryRegistrationHandle,
++  GenerateOptions,
++  LlmConfigurableProvider,
++  PreparedAdapterCall,
++} from '@deepseek-ai/dsh-llm'
+ import type {} from '@deepseek-ai/dsh-fs'
++import type { Session } from '@deepseek-ai/dsh-session'
+ import type {} from '@deepseek-ai/dsh-settings'
+ import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
+ import { PiAiAdapter } from './adapter.ts'
++import type { PiAiAdapterOptions } from './adapter.ts'
+ import { authContextFrom, credentialStoreFrom } from './auth.ts'
+ import { catalogProviderIds } from './catalog.ts'
+ import { assertServiceable, Config, resolveProfiles } from './config.ts'
+@@ -91,6 +101,31 @@ export const inject = ['llm']
+
+ const NS = 'llm-pi-ai'
+
++/**
++ * Plugin-private adapter wrapper that assigns session-keyed SDK resources to
++ * their exact live Agent before provider I/O starts. Keeping this out of
++ * {@link PiAiAdapterOptions} avoids turning Harness lifecycle wiring into a
++ * public adapter-construction contract.
++ */
++class AgentOwnedPiAiAdapter extends PiAiAdapter {
++  constructor(
++    options: PiAiAdapterOptions,
++    private readonly ownSessionResources: (sessionId: GenerateOptions['sessionId']) => void,
++  ) {
++    super(options)
++  }
++
++  override prepareCall(provider: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall> {
++    return super.prepareCall(provider, model, signal).then(prepared => ({
++      model: prepared.model,
++      stream: (options) => {
++        this.ownSessionResources(options.sessionId)
++        return prepared.stream(options)
++      },
++    }))
++  }
++}
++
+ /**
+  * The registry captures these per route; a change here must re-register.
+  * Sorted by provider so a settings document that merely reorders its keys is
+@@ -141,6 +176,46 @@ function directoryEntries(
+
+ /** Register one generic pi-ai adapter for all configured provider routes. */
+ export function apply(ctx: Context, config: Config): void {
++  const ownedAgents = new WeakSet<Agent>()
++  const agentlessSessions = new WeakSet<Session>()
++  const releaseSessionResources = (sessionId: Session['id']): void => {
++    try {
++      cleanupSessionResources(String(sessionId))
++    } catch (error: unknown) {
++      ctx.logger.warn(
++        `llm-pi-ai: cleanup failed for session "${sessionId}": ${String(error)}`,
++      )
++    }
++  }
++  const ownSessionResources = (sessionId: GenerateOptions['sessionId']): void => {
++    if (sessionId === undefined) return
++    const agent = ctx.get('agents')?.get(sessionId)
++    if (agent !== undefined) {
++      if (ownedAgents.has(agent)) return
++      // The Agent scope outlives this plugin's observation fiber during a
++      // whole-root unload. Its ordered teardown first quiesces model work, then
++      // disposes this effect while the exact Agent/Session identity is stable.
++      agent.ctx.effect(
++        () => () => { releaseSessionResources(agent.id) },
++        `llm-pi-ai: session resources (${agent.id})`,
++      )
++      // Publish only after effect registration commits: a scope-disposal race
++      // may reject registration, and a retained WeakSet entry would make a
++      // later request skip ownership even though no disposer exists.
++      ownedAgents.add(agent)
++      return
++    }
++    const session = ctx.get('sessions')?.get(sessionId)
++    if (session !== undefined) agentlessSessions.add(session)
++  }
++  ctx.on('session/disposed', (session: Session) => {
++    // Direct LLM callers may own a live Session without an Agent. Their
++    // explicit store lifecycle is the only available exact ownership seam;
++    // those callers own stream quiescence before they detach the Session.
++    if (!agentlessSessions.delete(session)) return
++    releaseSessionResources(session.id)
++  })
++
+   let current: () => Config = () => config
+   let lastRaw: Config | undefined
+   let memoized: ReadonlyMap<string, ResolvedPiAiProviderProfile> | undefined
+@@ -194,7 +269,7 @@ export function apply(ctx: Context, config: Config): void {
+   // through `ctx` per call, so they stay correct across the collection rebuilds
+   // a configuration change causes, and a sign-in survives one.
+   const auth = { credentials: credentialStoreFrom(ctx), authContext: authContextFrom(ctx) }
+-  const adapter = new PiAiAdapter({
++  const adapter = new AgentOwnedPiAiAdapter({
+     profiles,
+     resolveApiKey,
+     auth,
+@@ -210,7 +285,7 @@ export function apply(ctx: Context, config: Config): void {
+         + ` sending that message as provider-neutral content (${reason})`,
+       )
+     },
+-  })
++  }, ownSessionResources)
+   // Independent of the route set: signing in is what makes a route worth
+   // adding, so the flows are offered before any profile names their provider.
+   // Scoped to the authorization seam rather than injected outright, because a
+diff --git a/packages/llm/llm-pi-ai/tsconfig.json b/packages/llm/llm-pi-ai/tsconfig.json
+index 99ba92d18..0c0251406 100644
+--- a/packages/llm/llm-pi-ai/tsconfig.json
++++ b/packages/llm/llm-pi-ai/tsconfig.json
+@@ -26,6 +26,12 @@
+     {
+       "path": "../../llm/llm"
+     },
++    {
++      "path": "../../core/agent"
++    },
++    {
++      "path": "../../core/session"
++    },
+     {
+       "path": "../../attachment/attachment"
+     },
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 51de950c3..9b8b14a4f 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -23,7 +23,7 @@ importers:
+         version: link:packages/web/web-fetch-http
+       '@stylistic/eslint-plugin':
+         specifier: ^5.10.0
+-        version: 5.10.0(eslint@10.5.0(jiti@2.7.0))
++        version: 5.10.0(eslint@10.5.0(jiti@2.7.0)(supports-color@9.4.0))
+       '@testing-library/dom':
+         specifier: ^10.4.1
+         version: 10.4.1
+@@ -53,7 +53,7 @@ importers:
+         version: 4.17.1
+       eslint-plugin-sonarjs:
+         specifier: ^4.1.0
+-        version: 4.1.0(eslint@10.5.0(jiti@2.7.0))
++        version: 4.1.0(eslint@10.5.0(jiti@2.7.0)(supports-color@9.4.0))
+       execa:
+         specifier: ^10.0.0
+         version: 10.0.0
+@@ -80,10 +80,10 @@ importers:
+         version: 1.32.0
+       mdast-util-from-markdown:
+         specifier: ^2.0.3
+-        version: 2.0.3
++        version: 2.0.3(supports-color@9.4.0)
+       mdast-util-gfm:
+         specifier: ^3.1.0
+-        version: 3.1.0
++        version: 3.1.0(supports-color@9.4.0)
+       mermaid:
+         specifier: 11.16.0
+         version: 11.16.0
+@@ -116,7 +116,7 @@ importers:
+         version: 6.0.3
+       vite-tsconfig-paths:
+         specifier: ^6.1.1
+-        version: 6.1.1(typescript@6.0.3)(vite@8.0.16(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
++        version: 6.1.1(supports-color@9.4.0)(typescript@6.0.3)(vite@8.0.16(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
+       vitest:
+         specifier: ^4.1.8
+         version: 4.1.8(@opentelemetry/api@1.9.1)(@types/node@22.20.0)(@vitest/coverage-v8@4.1.8)(happy-dom@20.11.6)(jsdom@29.1.1(@noble/hashes@2.3.0))(vite@8.0.16(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
+@@ -510,13 +510,13 @@ importers:
+         version: 8.18.1
+       '@vitejs/plugin-react':
+         specifier: ^4.0.0
+-        version: 4.7.0(vite@6.4.3(@types/node@22.20.0)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0))
++        version: 4.7.0(supports-color@9.4.0)(vite@6.4.3(@types/node@22.20.0)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0))
+       fflate:
+         specifier: ^0.8.2
+         version: 0.8.3
+       http-server:
+         specifier: ^14.1.1
+-        version: 14.1.1
++        version: 14.1.1(debug@4.4.3(supports-color@9.4.0))(supports-color@9.4.0)
+       playwright:
+         specifier: ^1.49.0
+         version: 1.61.1
+@@ -2906,13 +2906,13 @@ importers:
+         version: 0.16.47
+       mdast-util-from-markdown:
+         specifier: ^2.0.3
+-        version: 2.0.3
++        version: 2.0.3(supports-color@9.4.0)
+       mdast-util-gfm:
+         specifier: ^3.1.0
+-        version: 3.1.0
++        version: 3.1.0(supports-color@9.4.0)
+       mdast-util-math:
+         specifier: ^3.0.0
+-        version: 3.0.0
++        version: 3.0.0(supports-color@9.4.0)
+       micromark-core-commonmark:
+         specifier: ^2.0.3
+         version: 2.0.3
+@@ -6086,7 +6086,7 @@ importers:
+         version: link:../../../vendor/schemastery
+       compression:
+         specifier: ^1.8.1
+-        version: 1.8.1
++        version: 1.8.1(supports-color@9.4.0)
+       negotiator:
+         specifier: ^1.0.0
+         version: 1.0.0
+@@ -6484,11 +6484,17 @@ importers:
+         version: link:../../../vendor/schemastery
+       '@earendil-works/pi-ai':
+         specifier: ^0.84.2
+-        version: 0.84.2(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)
++        version: 0.84.2(@modelcontextprotocol/sdk@1.29.0(supports-color@9.4.0)(zod@4.4.3))(supports-color@9.4.0)(ws@8.21.0)(zod@4.4.3)
+     devDependencies:
+       '@deepseek-ai/cordis':
+         specifier: workspace:^
+         version: link:../../../vendor/cordis
++      '@deepseek-ai/dsh-agent':
++        specifier: workspace:^
++        version: link:../../core/agent
++      '@deepseek-ai/dsh-agent-loop':
++        specifier: workspace:^
++        version: link:../../core/agent-loop
+       '@deepseek-ai/dsh-attachment':
+         specifier: workspace:^
+         version: link:../../attachment/attachment
+@@ -6513,12 +6519,24 @@ importers:
+       '@deepseek-ai/dsh-llm-deepseek':
+         specifier: workspace:^
+         version: link:../llm-deepseek
++      '@deepseek-ai/dsh-session':
++        specifier: workspace:^
++        version: link:../../core/session
++      '@deepseek-ai/dsh-session-projection':
++        specifier: workspace:^
++        version: link:../../session/session-projection
+       '@deepseek-ai/dsh-settings':
+         specifier: workspace:^
+         version: link:../../settings/settings
++      '@deepseek-ai/dsh-system-prompt':
++        specifier: workspace:^
++        version: link:../../core/system-prompt
+       '@deepseek-ai/dsh-timeout':
+         specifier: workspace:^
+         version: link:../../util/timeout
++      '@deepseek-ai/dsh-tools':
++        specifier: workspace:^
++        version: link:../../core/tools
+
+   packages/llm/llm-retry:
+     dependencies:
+@@ -6772,7 +6790,7 @@ importers:
+         version: link:../../../vendor/schemastery
+       '@modelcontextprotocol/sdk':
+         specifier: ^1.12.0
+-        version: 1.29.0(zod@4.4.3)
++        version: 1.29.0(supports-color@9.4.0)(zod@4.4.3)
+       zod:
+         specifier: ^4.4.3
+         version: 4.4.3
+@@ -6806,10 +6824,10 @@ importers:
+         version: link:../../core/tools
+       '@modelcontextprotocol/server-everything':
+         specifier: ^2026.7.4
+-        version: 2026.7.4
++        version: 2026.7.4(supports-color@9.4.0)
+       '@modelcontextprotocol/server-filesystem':
+         specifier: ^2026.7.4
+-        version: 2026.7.10(zod@4.4.3)
++        version: 2026.7.10(supports-color@9.4.0)(zod@4.4.3)
+
+   packages/plan/plan-mode:
+     dependencies:
+@@ -8690,7 +8708,7 @@ importers:
+     dependencies:
+       '@anthropic-ai/claude-agent-sdk':
+         specifier: 0.3.241
+-        version: 0.3.241(@anthropic-ai/sdk@0.93.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(zod@4.4.3)
++        version: 0.3.241(@anthropic-ai/sdk@0.93.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(supports-color@9.4.0)(zod@4.4.3))(zod@4.4.3)
+       '@anthropic-ai/sdk':
+         specifier: 0.93.0
+         version: 0.93.0(zod@4.4.3)
+@@ -8702,7 +8720,7 @@ importers:
+         version: link:../../../vendor/schemastery
+       '@modelcontextprotocol/sdk':
+         specifier: ^1.29.0
+-        version: 1.29.0(zod@4.4.3)
++        version: 1.29.0(supports-color@9.4.0)(zod@4.4.3)
+       zod:
+         specifier: ^4.4.3
+         version: 4.4.3
+@@ -9438,7 +9456,7 @@ importers:
+         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@18.3.7(@types/react@18.3.31))(@types/react@18.3.31)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+       vitest:
+         specifier: ^4.1.8
+-        version: 4.1.8(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.8)(happy-dom@20.11.6)(jsdom@29.1.1(@noble/hashes@2.3.0))(vite@8.0.16(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
++        version: 4.1.8(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.8)(happy-dom@20.11.6)(jsdom@29.1.1(@noble/hashes@2.3.0))(vite@8.0.16(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
+     devDependencies:
+       '@deepseek-ai/cordis':
+         specifier: workspace:^
+@@ -9579,7 +9597,7 @@ importers:
+         version: 4.2.0
+       vitest:
+         specifier: ^4.1.8
+-        version: 4.1.8(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.8)(happy-dom@20.11.6)(jsdom@29.1.1(@noble/hashes@2.3.0))(vite@8.0.16(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
++        version: 4.1.8(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.8)(happy-dom@20.11.6)(jsdom@29.1.1(@noble/hashes@2.3.0))(vite@8.0.16(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
+     devDependencies:
+       '@deepseek-ai/cordis':
+         specifier: workspace:^
+@@ -10814,7 +10832,7 @@ importers:
+         version: 1.11.21
+       debug:
+         specifier: 4.4.3
+-        version: 4.4.3
++        version: 4.4.3(supports-color@9.4.0)
+       mermaid:
+         specifier: 11.16.0
+         version: 11.16.0
+@@ -16674,10 +16692,10 @@ snapshots:
+   '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.241':
+     optional: true
+
+-  '@anthropic-ai/claude-agent-sdk@0.3.241(@anthropic-ai/sdk@0.93.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(zod@4.4.3)':
++  '@anthropic-ai/claude-agent-sdk@0.3.241(@anthropic-ai/sdk@0.93.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(supports-color@9.4.0)(zod@4.4.3))(zod@4.4.3)':
+     dependencies:
+       '@anthropic-ai/sdk': 0.93.0(zod@4.4.3)
+-      '@modelcontextprotocol/sdk': 1.29.0(zod@4.4.3)
++      '@modelcontextprotocol/sdk': 1.29.0(supports-color@9.4.0)(zod@4.4.3)
+       zod: 4.4.3
+     optionalDependencies:
+       '@anthropic-ai/claude-agent-sdk-darwin-arm64': 0.3.241
+@@ -16952,20 +16970,20 @@ snapshots:
+
+   '@babel/compat-data@7.29.7': {}
+
+-  '@babel/core@7.29.7':
++  '@babel/core@7.29.7(supports-color@9.4.0)':
+     dependencies:
+       '@babel/code-frame': 7.29.7
+       '@babel/generator': 7.29.7
+       '@babel/helper-compilation-targets': 7.29.7
+-      '@babel/helper-module-transforms': 7.29.7(@babel/core@7.29.7)
++      '@babel/helper-module-transforms': 7.29.7(@babel/core@7.29.7(supports-color@9.4.0))(supports-color@9.4.0)
+       '@babel/helpers': 7.29.7
+       '@babel/parser': 7.29.7
+       '@babel/template': 7.29.7
+-      '@babel/traverse': 7.29.7
++      '@babel/traverse': 7.29.7(supports-color@9.4.0)
+       '@babel/types': 7.29.7
+       '@jridgewell/remapping': 2.3.5
+       convert-source-map: 2.0.0
+-      debug: 4.4.3
++      debug: 4.4.3(supports-color@9.4.0)
+       gensync: 1.0.0-beta.2
+       json5: 2.2.3
+       semver: 6.3.1
+@@ -16999,19 +17017,19 @@ snapshots:
+
+   '@babel/helper-globals@7.29.7': {}
+
+-  '@babel/helper-module-imports@7.29.7':
++  '@babel/helper-module-imports@7.29.7(supports-color@9.4.0)':
+     dependencies:
+-      '@babel/traverse': 7.29.7
++      '@babel/traverse': 7.29.7(supports-color@9.4.0)
+       '@babel/types': 7.29.7
+     transitivePeerDependencies:
+       - supports-color
+
+-  '@babel/helper-module-transforms@7.29.7(@babel/core@7.29.7)':
++  '@babel/helper-module-transforms@7.29.7(@babel/core@7.29.7(supports-color@9.4.0))(supports-color@9.4.0)':
+     dependencies:
+-      '@babel/core': 7.29.7
+-      '@babel/helper-module-imports': 7.29.7
++      '@babel/core': 7.29.7(supports-color@9.4.0)
++      '@babel/helper-module-imports': 7.29.7(supports-color@9.4.0)
+       '@babel/helper-validator-identifier': 7.29.7
+-      '@babel/traverse': 7.29.7
++      '@babel/traverse': 7.29.7(supports-color@9.4.0)
+     transitivePeerDependencies:
+       - supports-color
+
+@@ -17040,14 +17058,14 @@ snapshots:
+     dependencies:
+       '@babel/types': 8.0.0-rc.6
+
+-  '@babel/plugin-transform-react-jsx-self@7.29.7(@babel/core@7.29.7)':
++  '@babel/plugin-transform-react-jsx-self@7.29.7(@babel/core@7.29.7(supports-color@9.4.0))':
+     dependencies:
+-      '@babel/core': 7.29.7
++      '@babel/core': 7.29.7(supports-color@9.4.0)
+       '@babel/helper-plugin-utils': 7.29.7
+
+-  '@babel/plugin-transform-react-jsx-source@7.29.7(@babel/core@7.29.7)':
++  '@babel/plugin-transform-react-jsx-source@7.29.7(@babel/core@7.29.7(supports-color@9.4.0))':
+     dependencies:
+-      '@babel/core': 7.29.7
++      '@babel/core': 7.29.7(supports-color@9.4.0)
+       '@babel/helper-plugin-utils': 7.29.7
+
+   '@babel/runtime@7.29.7': {}
+@@ -17058,7 +17076,7 @@ snapshots:
+       '@babel/parser': 7.29.7
+       '@babel/types': 7.29.7
+
+-  '@babel/traverse@7.29.7':
++  '@babel/traverse@7.29.7(supports-color@9.4.0)':
+     dependencies:
+       '@babel/code-frame': 7.29.7
+       '@babel/generator': 7.29.7
+@@ -17066,7 +17084,7 @@ snapshots:
+       '@babel/parser': 7.29.7
+       '@babel/template': 7.29.7
+       '@babel/types': 7.29.7
+-      debug: 4.4.3
++      debug: 4.4.3(supports-color@9.4.0)
+     transitivePeerDependencies:
+       - supports-color
+
+@@ -17156,16 +17174,16 @@ snapshots:
+     transitivePeerDependencies:
+       - '@algolia/client-search'
+
+-  '@earendil-works/pi-ai@0.84.2(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(ws@8.21.0)(zod@4.4.3)':
++  '@earendil-works/pi-ai@0.84.2(@modelcontextprotocol/sdk@1.29.0(supports-color@9.4.0)(zod@4.4.3))(supports-color@9.4.0)(ws@8.21.0)(zod@4.4.3)':
+     dependencies:
+       '@anthropic-ai/sdk': 0.91.1(zod@4.4.3)
+       '@aws-sdk/client-bedrock-runtime': 3.1048.0
+       '@earendil-works/pi-telemetry': 0.84.2
+-      '@google/genai': 1.52.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))
++      '@google/genai': 1.52.0(@modelcontextprotocol/sdk@1.29.0(supports-color@9.4.0)(zod@4.4.3))(supports-color@9.4.0)
+       '@opentelemetry/api': 1.9.0
+       '@smithy/node-http-handler': 4.7.3
+-      http-proxy-agent: 7.0.2
+-      https-proxy-agent: 7.0.6
++      http-proxy-agent: 7.0.2(supports-color@9.4.0)
++      https-proxy-agent: 7.0.6(supports-color@9.4.0)
+       openai: 6.40.0(ws@8.21.0)(zod@4.4.3)
+       partial-json: 0.1.7
+       typebox: 1.3.7
+@@ -17441,17 +17459,17 @@ snapshots:
+   '@esbuild/win32-x64@0.28.1':
+     optional: true
+
+-  '@eslint-community/eslint-utils@4.9.1(eslint@10.5.0(jiti@2.7.0))':
++  '@eslint-community/eslint-utils@4.9.1(eslint@10.5.0(jiti@2.7.0)(supports-color@9.4.0))':
+     dependencies:
+-      eslint: 10.5.0(jiti@2.7.0)
++      eslint: 10.5.0(jiti@2.7.0)(supports-color@9.4.0)
+       eslint-visitor-keys: 3.4.3
+
+   '@eslint-community/regexpp@4.12.2': {}
+
+-  '@eslint/config-array@0.23.5':
++  '@eslint/config-array@0.23.5(supports-color@9.4.0)':
+     dependencies:
+       '@eslint/object-schema': 3.0.5
+-      debug: 4.4.3
++      debug: 4.4.3(supports-color@9.4.0)
+       minimatch: 10.2.5
+     transitivePeerDependencies:
+       - supports-color
+@@ -17475,14 +17493,14 @@ snapshots:
+     optionalDependencies:
+       '@noble/hashes': 2.3.0
+
+-  '@google/genai@1.52.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))':
++  '@google/genai@1.52.0(@modelcontextprotocol/sdk@1.29.0(supports-color@9.4.0)(zod@4.4.3))(supports-color@9.4.0)':
+     dependencies:
+-      google-auth-library: 10.7.0
++      google-auth-library: 10.7.0(supports-color@9.4.0)
+       p-retry: 4.6.2
+       protobufjs: 7.6.4
+       ws: 8.21.0
+     optionalDependencies:
+-      '@modelcontextprotocol/sdk': 1.29.0(zod@4.4.3)
++      '@modelcontextprotocol/sdk': 1.29.0(supports-color@9.4.0)(zod@4.4.3)
+     transitivePeerDependencies:
+       - bufferutil
+       - supports-color
+@@ -17829,7 +17847,7 @@ snapshots:
+
+   '@mixmark-io/domino@2.2.0': {}
+
+-  '@modelcontextprotocol/sdk@1.29.0(zod@4.4.3)':
++  '@modelcontextprotocol/sdk@1.29.0(supports-color@9.4.0)(zod@4.4.3)':
+     dependencies:
+       '@hono/node-server': 1.19.14(hono@4.12.29)
+       ajv: 8.20.0
+@@ -17839,8 +17857,8 @@ snapshots:
+       cross-spawn: 7.0.6
+       eventsource: 3.0.7
+       eventsource-parser: 3.1.0
+-      express: 5.2.1
+-      express-rate-limit: 8.5.2(express@5.2.1)
++      express: 5.2.1(supports-color@9.4.0)
++      express-rate-limit: 8.5.2(express@5.2.1(supports-color@9.4.0))
+       hono: 4.12.29
+       jose: 6.2.3
+       json-schema-typed: 8.0.2
+@@ -17851,20 +17869,20 @@ snapshots:
+     transitivePeerDependencies:
+       - supports-color
+
+-  '@modelcontextprotocol/server-everything@2026.7.4':
++  '@modelcontextprotocol/server-everything@2026.7.4(supports-color@9.4.0)':
+     dependencies:
+-      '@modelcontextprotocol/sdk': 1.29.0(zod@4.4.3)
++      '@modelcontextprotocol/sdk': 1.29.0(supports-color@9.4.0)(zod@4.4.3)
+       cors: 2.8.6
+-      express: 5.2.1
++      express: 5.2.1(supports-color@9.4.0)
+       jszip: 3.10.1
+       zod: 4.4.3
+     transitivePeerDependencies:
+       - '@cfworker/json-schema'
+       - supports-color
+
+-  '@modelcontextprotocol/server-filesystem@2026.7.10(zod@4.4.3)':
++  '@modelcontextprotocol/server-filesystem@2026.7.10(supports-color@9.4.0)(zod@4.4.3)':
+     dependencies:
+-      '@modelcontextprotocol/sdk': 1.29.0(zod@4.4.3)
++      '@modelcontextprotocol/sdk': 1.29.0(supports-color@9.4.0)(zod@4.4.3)
+       diff: 8.0.4
+       glob: 10.5.0
+       minimatch: 10.2.5
+@@ -18502,11 +18520,11 @@ snapshots:
+
+   '@standard-schema/spec@1.1.0': {}
+
+-  '@stylistic/eslint-plugin@5.10.0(eslint@10.5.0(jiti@2.7.0))':
++  '@stylistic/eslint-plugin@5.10.0(eslint@10.5.0(jiti@2.7.0)(supports-color@9.4.0))':
+     dependencies:
+-      '@eslint-community/eslint-utils': 4.9.1(eslint@10.5.0(jiti@2.7.0))
++      '@eslint-community/eslint-utils': 4.9.1(eslint@10.5.0(jiti@2.7.0)(supports-color@9.4.0))
+       '@typescript-eslint/types': 8.61.0
+-      eslint: 10.5.0(jiti@2.7.0)
++      eslint: 10.5.0(jiti@2.7.0)(supports-color@9.4.0)
+       eslint-visitor-keys: 4.2.1
+       espree: 10.4.0
+       estraverse: 5.3.0
+@@ -18843,11 +18861,11 @@ snapshots:
+       d3-selection: 3.0.0
+       d3-transition: 3.0.1(d3-selection@3.0.0)
+
+-  '@vitejs/plugin-react@4.7.0(vite@6.4.3(@types/node@22.20.0)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0))':
++  '@vitejs/plugin-react@4.7.0(supports-color@9.4.0)(vite@6.4.3(@types/node@22.20.0)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0))':
+     dependencies:
+-      '@babel/core': 7.29.7
+-      '@babel/plugin-transform-react-jsx-self': 7.29.7(@babel/core@7.29.7)
+-      '@babel/plugin-transform-react-jsx-source': 7.29.7(@babel/core@7.29.7)
++      '@babel/core': 7.29.7(supports-color@9.4.0)
++      '@babel/plugin-transform-react-jsx-self': 7.29.7(@babel/core@7.29.7(supports-color@9.4.0))
++      '@babel/plugin-transform-react-jsx-source': 7.29.7(@babel/core@7.29.7(supports-color@9.4.0))
+       '@rolldown/pluginutils': 1.0.0-beta.27
+       '@types/babel__core': 7.20.5
+       react-refresh: 0.17.0
+@@ -18899,14 +18917,6 @@ snapshots:
+     optionalDependencies:
+       vite: 8.0.16(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+
+-  '@vitest/mocker@4.1.8(vite@8.0.16(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))':
+-    dependencies:
+-      '@vitest/spy': 4.1.8
+-      estree-walker: 3.0.3
+-      magic-string: 0.30.21
+-    optionalDependencies:
+-      vite: 8.0.16(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+-
+   '@vitest/pretty-format@4.1.8':
+     dependencies:
+       tinyrainbow: 3.1.0
+@@ -19204,11 +19214,11 @@ snapshots:
+
+   birpc@4.0.0: {}
+
+-  body-parser@2.3.0:
++  body-parser@2.3.0(supports-color@9.4.0):
+     dependencies:
+       bytes: 3.1.2
+       content-type: 2.0.0
+-      debug: 4.4.3
++      debug: 4.4.3(supports-color@9.4.0)
+       http-errors: 2.0.1
+       iconv-lite: 0.7.3
+       on-finished: 2.4.1
+@@ -19318,11 +19328,11 @@ snapshots:
+     dependencies:
+       mime-db: 1.54.0
+
+-  compression@1.8.1:
++  compression@1.8.1(supports-color@9.4.0):
+     dependencies:
+       bytes: 3.1.2
+       compressible: 2.0.18
+-      debug: 2.6.9
++      debug: 2.6.9(supports-color@9.4.0)
+       negotiator: 0.6.4
+       on-headers: 1.1.0
+       safe-buffer: 5.2.1
+@@ -19571,13 +19581,17 @@ snapshots:
+
+   dayjs@1.11.21: {}
+
+-  debug@2.6.9:
++  debug@2.6.9(supports-color@9.4.0):
+     dependencies:
+       ms: 2.0.0
++    optionalDependencies:
++      supports-color: 9.4.0
+
+-  debug@4.4.3:
++  debug@4.4.3(supports-color@9.4.0):
+     dependencies:
+       ms: 2.1.3
++    optionalDependencies:
++      supports-color: 9.4.0
+
+   decimal.js@10.6.0: {}
+
+@@ -19779,12 +19793,12 @@ snapshots:
+
+   escape-string-regexp@5.0.0: {}
+
+-  eslint-plugin-sonarjs@4.1.0(eslint@10.5.0(jiti@2.7.0)):
++  eslint-plugin-sonarjs@4.1.0(eslint@10.5.0(jiti@2.7.0)(supports-color@9.4.0)):
+     dependencies:
+       '@eslint-community/regexpp': 4.12.2
+       builtin-modules: 3.3.0
+       bytes: 3.1.2
+-      eslint: 10.5.0(jiti@2.7.0)
++      eslint: 10.5.0(jiti@2.7.0)(supports-color@9.4.0)
+       functional-red-black-tree: 1.0.1
+       globals: 17.7.0
+       jsx-ast-utils-x: 0.1.0
+@@ -19809,11 +19823,11 @@ snapshots:
+
+   eslint-visitor-keys@5.0.1: {}
+
+-  eslint@10.5.0(jiti@2.7.0):
++  eslint@10.5.0(jiti@2.7.0)(supports-color@9.4.0):
+     dependencies:
+-      '@eslint-community/eslint-utils': 4.9.1(eslint@10.5.0(jiti@2.7.0))
++      '@eslint-community/eslint-utils': 4.9.1(eslint@10.5.0(jiti@2.7.0)(supports-color@9.4.0))
+       '@eslint-community/regexpp': 4.12.2
+-      '@eslint/config-array': 0.23.5
++      '@eslint/config-array': 0.23.5(supports-color@9.4.0)
+       '@eslint/config-helpers': 0.6.0
+       '@eslint/core': 1.2.1
+       '@eslint/plugin-kit': 0.7.2
+@@ -19823,7 +19837,7 @@ snapshots:
+       '@types/estree': 1.0.9
+       ajv: 6.15.0
+       cross-spawn: 7.0.6
+-      debug: 4.4.3
++      debug: 4.4.3(supports-color@9.4.0)
+       escape-string-regexp: 4.0.0
+       eslint-scope: 9.1.2
+       eslint-visitor-keys: 5.0.1
+@@ -19908,25 +19922,25 @@ snapshots:
+
+   expect-type@1.3.0: {}
+
+-  express-rate-limit@8.5.2(express@5.2.1):
++  express-rate-limit@8.5.2(express@5.2.1(supports-color@9.4.0)):
+     dependencies:
+-      express: 5.2.1
++      express: 5.2.1(supports-color@9.4.0)
+       ip-address: 10.2.0
+
+-  express@5.2.1:
++  express@5.2.1(supports-color@9.4.0):
+     dependencies:
+       accepts: 2.0.0
+-      body-parser: 2.3.0
++      body-parser: 2.3.0(supports-color@9.4.0)
+       content-disposition: 1.1.0
+       content-type: 1.0.5
+       cookie: 0.7.2
+       cookie-signature: 1.2.2
+-      debug: 4.4.3
++      debug: 4.4.3(supports-color@9.4.0)
+       depd: 2.0.0
+       encodeurl: 2.0.0
+       escape-html: 1.0.3
+       etag: 1.8.1
+-      finalhandler: 2.1.1
++      finalhandler: 2.1.1(supports-color@9.4.0)
+       fresh: 2.0.0
+       http-errors: 2.0.1
+       merge-descriptors: 2.0.0
+@@ -19937,9 +19951,9 @@ snapshots:
+       proxy-addr: 2.0.7
+       qs: 6.15.3
+       range-parser: 1.3.0
+-      router: 2.2.0
+-      send: 1.2.1
+-      serve-static: 2.2.1
++      router: 2.2.0(supports-color@9.4.0)
++      send: 1.2.1(supports-color@9.4.0)
++      serve-static: 2.2.1(supports-color@9.4.0)
+       statuses: 2.0.2
+       type-is: 2.1.0
+       vary: 1.1.2
+@@ -19991,9 +20005,9 @@ snapshots:
+     dependencies:
+       flat-cache: 4.0.1
+
+-  finalhandler@2.1.1:
++  finalhandler@2.1.1(supports-color@9.4.0):
+     dependencies:
+-      debug: 4.4.3
++      debug: 4.4.3(supports-color@9.4.0)
+       encodeurl: 2.0.0
+       escape-html: 1.0.3
+       on-finished: 2.4.1
+@@ -20018,7 +20032,9 @@ snapshots:
+     dependencies:
+       tabbable: 6.5.0
+
+-  follow-redirects@1.16.0: {}
++  follow-redirects@1.16.0(debug@4.4.3(supports-color@9.4.0)):
++    optionalDependencies:
++      debug: 4.4.3(supports-color@9.4.0)
+
+   foreground-child@3.3.1:
+     dependencies:
+@@ -20043,17 +20059,17 @@ snapshots:
+
+   functional-red-black-tree@1.0.1: {}
+
+-  gaxios@7.1.5:
++  gaxios@7.1.5(supports-color@9.4.0):
+     dependencies:
+       extend: 3.0.2
+-      https-proxy-agent: 7.0.6
++      https-proxy-agent: 7.0.6(supports-color@9.4.0)
+       node-fetch: 3.3.2
+     transitivePeerDependencies:
+       - supports-color
+
+-  gcp-metadata@8.1.2:
++  gcp-metadata@8.1.2(supports-color@9.4.0):
+     dependencies:
+-      gaxios: 7.1.5
++      gaxios: 7.1.5(supports-color@9.4.0)
+       google-logging-utils: 1.1.3
+       json-bigint: 1.0.0
+     transitivePeerDependencies:
+@@ -20114,12 +20130,12 @@ snapshots:
+
+   globrex@0.1.2: {}
+
+-  google-auth-library@10.7.0:
++  google-auth-library@10.7.0(supports-color@9.4.0):
+     dependencies:
+       base64-js: 1.5.1
+       ecdsa-sig-formatter: 1.0.11
+-      gaxios: 7.1.5
+-      gcp-metadata: 8.1.2
++      gaxios: 7.1.5(supports-color@9.4.0)
++      gcp-metadata: 8.1.2(supports-color@9.4.0)
+       google-logging-utils: 1.1.3
+       jws: 4.0.1
+     transitivePeerDependencies:
+@@ -20200,33 +20216,33 @@ snapshots:
+       statuses: 2.0.2
+       toidentifier: 1.0.1
+
+-  http-proxy-agent@7.0.2:
++  http-proxy-agent@7.0.2(supports-color@9.4.0):
+     dependencies:
+       agent-base: 7.1.4
+-      debug: 4.4.3
++      debug: 4.4.3(supports-color@9.4.0)
+     transitivePeerDependencies:
+       - supports-color
+
+-  http-proxy@1.18.1:
++  http-proxy@1.18.1(debug@4.4.3(supports-color@9.4.0)):
+     dependencies:
+       eventemitter3: 4.0.7
+-      follow-redirects: 1.16.0
++      follow-redirects: 1.16.0(debug@4.4.3(supports-color@9.4.0))
+       requires-port: 1.0.0
+     transitivePeerDependencies:
+       - debug
+
+-  http-server@14.1.1:
++  http-server@14.1.1(debug@4.4.3(supports-color@9.4.0))(supports-color@9.4.0):
+     dependencies:
+       basic-auth: 2.0.1
+       chalk: 4.1.2
+       corser: 2.0.1
+       he: 1.2.0
+       html-encoding-sniffer: 3.0.0
+-      http-proxy: 1.18.1
++      http-proxy: 1.18.1(debug@4.4.3(supports-color@9.4.0))
+       mime: 1.6.0
+       minimist: 1.2.8
+       opener: 1.5.2
+-      portfinder: 1.0.38
++      portfinder: 1.0.38(supports-color@9.4.0)
+       secure-compare: 3.0.1
+       union: 0.5.0
+       url-join: 4.0.1
+@@ -20234,10 +20250,10 @@ snapshots:
+       - debug
+       - supports-color
+
+-  https-proxy-agent@7.0.6:
++  https-proxy-agent@7.0.6(supports-color@9.4.0):
+     dependencies:
+       agent-base: 7.1.4
+-      debug: 4.4.3
++      debug: 4.4.3(supports-color@9.4.0)
+     transitivePeerDependencies:
+       - supports-color
+
+@@ -20643,14 +20659,14 @@ snapshots:
+       unist-util-is: 6.0.1
+       unist-util-visit-parents: 6.0.2
+
+-  mdast-util-from-markdown@2.0.3:
++  mdast-util-from-markdown@2.0.3(supports-color@9.4.0):
+     dependencies:
+       '@types/mdast': 4.0.4
+       '@types/unist': 3.0.3
+       decode-named-character-reference: 1.3.0
+       devlop: 1.1.0
+       mdast-util-to-string: 4.0.0
+-      micromark: 4.0.2
++      micromark: 4.0.2(supports-color@9.4.0)
+       micromark-util-decode-numeric-character-reference: 2.0.2
+       micromark-util-decode-string: 2.0.1
+       micromark-util-normalize-identifier: 2.0.1
+@@ -20668,62 +20684,62 @@ snapshots:
+       mdast-util-find-and-replace: 3.0.2
+       micromark-util-character: 2.1.1
+
+-  mdast-util-gfm-footnote@2.1.0:
++  mdast-util-gfm-footnote@2.1.0(supports-color@9.4.0):
+     dependencies:
+       '@types/mdast': 4.0.4
+       devlop: 1.1.0
+-      mdast-util-from-markdown: 2.0.3
++      mdast-util-from-markdown: 2.0.3(supports-color@9.4.0)
+       mdast-util-to-markdown: 2.1.2
+       micromark-util-normalize-identifier: 2.0.1
+     transitivePeerDependencies:
+       - supports-color
+
+-  mdast-util-gfm-strikethrough@2.0.0:
++  mdast-util-gfm-strikethrough@2.0.0(supports-color@9.4.0):
+     dependencies:
+       '@types/mdast': 4.0.4
+-      mdast-util-from-markdown: 2.0.3
++      mdast-util-from-markdown: 2.0.3(supports-color@9.4.0)
+       mdast-util-to-markdown: 2.1.2
+     transitivePeerDependencies:
+       - supports-color
+
+-  mdast-util-gfm-table@2.0.0:
++  mdast-util-gfm-table@2.0.0(supports-color@9.4.0):
+     dependencies:
+       '@types/mdast': 4.0.4
+       devlop: 1.1.0
+       markdown-table: 3.0.4
+-      mdast-util-from-markdown: 2.0.3
++      mdast-util-from-markdown: 2.0.3(supports-color@9.4.0)
+       mdast-util-to-markdown: 2.1.2
+     transitivePeerDependencies:
+       - supports-color
+
+-  mdast-util-gfm-task-list-item@2.0.0:
++  mdast-util-gfm-task-list-item@2.0.0(supports-color@9.4.0):
+     dependencies:
+       '@types/mdast': 4.0.4
+       devlop: 1.1.0
+-      mdast-util-from-markdown: 2.0.3
++      mdast-util-from-markdown: 2.0.3(supports-color@9.4.0)
+       mdast-util-to-markdown: 2.1.2
+     transitivePeerDependencies:
+       - supports-color
+
+-  mdast-util-gfm@3.1.0:
++  mdast-util-gfm@3.1.0(supports-color@9.4.0):
+     dependencies:
+-      mdast-util-from-markdown: 2.0.3
++      mdast-util-from-markdown: 2.0.3(supports-color@9.4.0)
+       mdast-util-gfm-autolink-literal: 2.0.1
+-      mdast-util-gfm-footnote: 2.1.0
+-      mdast-util-gfm-strikethrough: 2.0.0
+-      mdast-util-gfm-table: 2.0.0
+-      mdast-util-gfm-task-list-item: 2.0.0
++      mdast-util-gfm-footnote: 2.1.0(supports-color@9.4.0)
++      mdast-util-gfm-strikethrough: 2.0.0(supports-color@9.4.0)
++      mdast-util-gfm-table: 2.0.0(supports-color@9.4.0)
++      mdast-util-gfm-task-list-item: 2.0.0(supports-color@9.4.0)
+       mdast-util-to-markdown: 2.1.2
+     transitivePeerDependencies:
+       - supports-color
+
+-  mdast-util-math@3.0.0:
++  mdast-util-math@3.0.0(supports-color@9.4.0):
+     dependencies:
+       '@types/hast': 3.0.5
+       '@types/mdast': 4.0.4
+       devlop: 1.1.0
+       longest-streak: 3.1.0
+-      mdast-util-from-markdown: 2.0.3
++      mdast-util-from-markdown: 2.0.3(supports-color@9.4.0)
+       mdast-util-to-markdown: 2.1.2
+       unist-util-remove-position: 5.0.0
+     transitivePeerDependencies:
+@@ -20971,10 +20987,10 @@ snapshots:
+
+   micromark-util-types@2.0.2: {}
+
+-  micromark@4.0.2:
++  micromark@4.0.2(supports-color@9.4.0):
+     dependencies:
+       '@types/debug': 4.1.13
+-      debug: 4.4.3
++      debug: 4.4.3(supports-color@9.4.0)
+       decode-named-character-reference: 1.3.0
+       devlop: 1.1.0
+       micromark-core-commonmark: 2.0.3
+@@ -21302,10 +21318,10 @@ snapshots:
+       path-data-parser: 0.1.0
+       points-on-curve: 0.2.0
+
+-  portfinder@1.0.38:
++  portfinder@1.0.38(supports-color@9.4.0):
+     dependencies:
+       async: 3.2.6
+-      debug: 4.4.3
++      debug: 4.4.3(supports-color@9.4.0)
+     transitivePeerDependencies:
+       - supports-color
+
+@@ -21548,9 +21564,9 @@ snapshots:
+       points-on-curve: 0.2.0
+       points-on-path: 0.2.1
+
+-  router@2.2.0:
++  router@2.2.0(supports-color@9.4.0):
+     dependencies:
+-      debug: 4.4.3
++      debug: 4.4.3(supports-color@9.4.0)
+       depd: 2.0.0
+       is-promise: 4.0.0
+       parseurl: 1.3.3
+@@ -21596,9 +21612,9 @@ snapshots:
+
+   semver@7.8.5: {}
+
+-  send@1.2.1:
++  send@1.2.1(supports-color@9.4.0):
+     dependencies:
+-      debug: 4.4.3
++      debug: 4.4.3(supports-color@9.4.0)
+       encodeurl: 2.0.0
+       escape-html: 1.0.3
+       etag: 1.8.1
+@@ -21612,12 +21628,12 @@ snapshots:
+     transitivePeerDependencies:
+       - supports-color
+
+-  serve-static@2.2.1:
++  serve-static@2.2.1(supports-color@9.4.0):
+     dependencies:
+       encodeurl: 2.0.0
+       escape-html: 1.0.3
+       parseurl: 1.3.3
+-      send: 1.2.1
++      send: 1.2.1(supports-color@9.4.0)
+     transitivePeerDependencies:
+       - supports-color
+
+@@ -21988,9 +22004,9 @@ snapshots:
+       '@types/unist': 3.0.3
+       vfile-message: 4.0.3
+
+-  vite-tsconfig-paths@6.1.1(typescript@6.0.3)(vite@8.0.16(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)):
++  vite-tsconfig-paths@6.1.1(supports-color@9.4.0)(typescript@6.0.3)(vite@8.0.16(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)):
+     dependencies:
+-      debug: 4.4.3
++      debug: 4.4.3(supports-color@9.4.0)
+       globrex: 0.1.2
+       tsconfck: 3.1.6(typescript@6.0.3)
+       vite: 8.0.16(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+@@ -22039,21 +22055,6 @@ snapshots:
+       tsx: 4.22.4
+       yaml: 2.9.0
+
+-  vite@8.0.16(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0):
+-    dependencies:
+-      lightningcss: 1.32.0
+-      picomatch: 4.0.4
+-      postcss: 8.5.15
+-      rolldown: 1.0.3
+-      tinyglobby: 0.2.17
+-    optionalDependencies:
+-      '@types/node': 26.1.2
+-      esbuild: 0.28.1
+-      fsevents: 2.3.3
+-      jiti: 2.7.0
+-      tsx: 4.22.4
+-      yaml: 2.9.0
+-
+   vitepress-plugin-mermaid@2.0.17(mermaid@11.16.0)(vitepress@1.6.4(@algolia/client-search@5.55.2)(@types/node@25.9.3)(@types/react@18.3.31)(lightningcss@1.32.0)(postcss@8.5.15)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(search-insights@2.17.3)(typescript@6.0.3)):
+     dependencies:
+       mermaid: 11.16.0
+@@ -22173,10 +22174,10 @@ snapshots:
+     transitivePeerDependencies:
+       - msw
+
+-  vitest@4.1.8(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.8)(happy-dom@20.11.6)(jsdom@29.1.1(@noble/hashes@2.3.0))(vite@8.0.16(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)):
++  vitest@4.1.8(@opentelemetry/api@1.9.1)(@types/node@25.9.3)(@vitest/coverage-v8@4.1.8)(happy-dom@20.11.6)(jsdom@29.1.1(@noble/hashes@2.3.0))(vite@8.0.16(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)):
+     dependencies:
+       '@vitest/expect': 4.1.8
+-      '@vitest/mocker': 4.1.8(vite@8.0.16(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
++      '@vitest/mocker': 4.1.8(vite@8.0.16(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0))
+       '@vitest/pretty-format': 4.1.8
+       '@vitest/runner': 4.1.8
+       '@vitest/snapshot': 4.1.8
+@@ -22193,7 +22194,7 @@ snapshots:
+       tinyexec: 1.2.4
+       tinyglobby: 0.2.17
+       tinyrainbow: 3.1.0
+-      vite: 8.0.16(@types/node@26.1.2)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
++      vite: 8.0.16(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+       why-is-node-running: 2.3.0
+     optionalDependencies:
+       '@opentelemetry/api': 1.9.1
+diff --git a/packages/llm/llm-pi-ai/tests/session-resources.spec.ts b/packages/llm/llm-pi-ai/tests/session-resources.spec.ts
+new file mode 100644
+index 000000000..22397ed2f
+--- /dev/null
++++ b/packages/llm/llm-pi-ai/tests/session-resources.spec.ts
+@@ -0,0 +1,259 @@
++import { cleanupSessionResources, registerSessionResourceCleanup } from '@earendil-works/pi-ai'
++import {
++  getOpenAICodexWebSocketDebugStats,
++  resetOpenAICodexWebSocketDebugStats,
++} from '@earendil-works/pi-ai/api/openai-codex-responses'
++import { Context } from '@deepseek-ai/cordis'
++import AgentRegistry from '@deepseek-ai/dsh-agent'
++import AgentLoop from '@deepseek-ai/dsh-agent-loop'
++import LlmRuntime from '@deepseek-ai/dsh-llm'
++import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
++import SessionStore, { SessionId, type SessionId as SessionIdType } from '@deepseek-ai/dsh-session'
++import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
++import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
++import ToolRuntime from '@deepseek-ai/dsh-tools'
++import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
++
++const liveContexts = new Set<Context>()
++
++class FakeCodexWebSocket {
++  static readonly instances: FakeCodexWebSocket[] = []
++
++  readonly sent: string[] = []
++  readonly closes: { code?: number; reason?: string }[] = []
++  readyState = 0
++  private readonly listeners = new Map<string, Set<(event: unknown) => void>>()
++
++  constructor() {
++    FakeCodexWebSocket.instances.push(this)
++    queueMicrotask(() => {
++      this.readyState = 1
++      this.emit('open', {})
++    })
++  }
++
++  addEventListener(type: string, listener: (event: unknown) => void): void {
++    const listeners = this.listeners.get(type) ?? new Set()
++    listeners.add(listener)
++    this.listeners.set(type, listeners)
++  }
++
++  removeEventListener(type: string, listener: (event: unknown) => void): void {
++    this.listeners.get(type)?.delete(listener)
++  }
++
++  send(payload: string): void {
++    this.sent.push(payload)
++    const response = {
++      type: 'response.completed',
++      response: {
++        id: `response-${this.sent.length}`,
++        status: 'completed',
++        output: [],
++        usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 },
++      },
++    }
++    queueMicrotask(() => { this.emit('message', { data: JSON.stringify(response) }) })
++  }
++
++  close(code?: number, reason?: string): void {
++    this.closes.push({
++      ...code === undefined ? {} : { code },
++      ...reason === undefined ? {} : { reason },
++    })
++    this.readyState = 3
++  }
++
++  private emit(type: string, event: unknown): void {
++    for (const listener of this.listeners.get(type) ?? []) listener(event)
++  }
++}
++
++async function harness(): Promise<Context> {
++  const ctx = new Context()
++  liveContexts.add(ctx)
++  await ctx.plugin(LlmRuntime)
++  await ctx.plugin(SessionStore)
++  await ctx.plugin(SessionProjectionRegistry)
++  await ctx.plugin(SystemPrompt, { persona: 'You run lifecycle tests.' })
++  await ctx.plugin(ToolRuntime)
++  await ctx.plugin(AgentRegistry)
++  await ctx.plugin(AgentLoop, { agents: [] })
++  await ctx.plugin(LlmPiAi, {
++    providers: {
++      'openai-codex': {
++        apiKeyEnv: 'PI_TEST_KEY',
++        transport: 'websocket',
++      },
++    },
++  })
++  return ctx
++}
++
++async function run(ctx: Context, sessionId: SessionIdType): Promise<unknown[]> {
++  const chunks: unknown[] = []
++  for await (const chunk of ctx.llm.stream({
++    provider: 'openai-codex',
++    model: 'gpt-5.4',
++    messages: [],
++    sessionId,
++  })) chunks.push(chunk)
++  return chunks
++}
++
++function idleTimerFrom(setTimeoutSpy: MockInstance<typeof globalThis.setTimeout>): unknown {
++  const index = setTimeoutSpy.mock.calls.findLastIndex(call => call[1] === 5 * 60 * 1000)
++  if (index < 0) throw new Error('pi-ai did not schedule its five-minute idle expiry')
++  const result = setTimeoutSpy.mock.results[index]
++  if (result?.type !== 'return') throw new Error('pi-ai idle expiry did not return a timer')
++  return result.value
++}
++
++beforeEach(() => {
++  const claim = Buffer.from(JSON.stringify({
++    'https://api.openai.com/auth': { chatgpt_account_id: 'account-test' },
++  })).toString('base64url')
++  vi.stubEnv('PI_TEST_KEY', `e30.${claim}.signature`)
++  vi.stubGlobal('WebSocket', FakeCodexWebSocket)
++})
++
++afterEach(async () => {
++  await Promise.all([...liveContexts].map(ctx => ctx.fiber.dispose()))
++  liveContexts.clear()
++  cleanupSessionResources()
++  resetOpenAICodexWebSocketDebugStats()
++  FakeCodexWebSocket.instances.length = 0
++  vi.unstubAllEnvs()
++  vi.unstubAllGlobals()
++  vi.restoreAllMocks()
++})
++
++describe('pi-ai session resources', () => {
++  it('reuses one keyed Codex WebSocket until the exact Agent handle is disposed', async () => {
++    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
++    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout')
++    const ctx = await harness()
++    const sessionId = SessionId('pi-ai-agent-resource-owner')
++    const firstOwner = await ctx.agents.create({
++      sessionId,
++      agentOptions: { provider: 'openai-codex', model: 'gpt-5.4' },
++    })
++
++    expect((await run(ctx, sessionId)).at(-1)).toMatchObject({ type: 'finish' })
++    expect((await run(ctx, sessionId)).at(-1)).toMatchObject({ type: 'finish' })
++    expect(FakeCodexWebSocket.instances).toHaveLength(1)
++    expect(FakeCodexWebSocket.instances[0]?.sent).toHaveLength(2)
++    expect(FakeCodexWebSocket.instances[0]?.closes).toEqual([])
++    expect(getOpenAICodexWebSocketDebugStats(sessionId)).toMatchObject({
++      requests: 2,
++      connectionsCreated: 1,
++      connectionsReused: 1,
++    })
++    const firstIdleTimer = idleTimerFrom(setTimeoutSpy)
++
++    await firstOwner.dispose()
++
++    expect(clearTimeoutSpy).toHaveBeenCalledWith(firstIdleTimer)
++    expect(FakeCodexWebSocket.instances[0]?.closes).toEqual([
++      { code: 1000, reason: 'debug_close' },
++    ])
++    expect(ctx.agents.get(sessionId)).toBeUndefined()
++    expect(ctx.sessions.get(sessionId)).toBeUndefined()
++
++    const replacement = await ctx.agents.create({
++      sessionId,
++      agentOptions: { provider: 'openai-codex', model: 'gpt-5.4' },
++    })
++    expect((await run(ctx, sessionId)).at(-1)).toMatchObject({ type: 'finish' })
++    expect(FakeCodexWebSocket.instances).toHaveLength(2)
++    expect(FakeCodexWebSocket.instances[1]?.closes).toEqual([])
++
++    await replacement.dispose()
++
++    expect(FakeCodexWebSocket.instances[1]?.closes).toEqual([
++      { code: 1000, reason: 'debug_close' },
++    ])
++    await ctx.fiber.dispose()
++  })
++
++  it('cleans a used agentless Session on its exact store disposal edge', async () => {
++    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
++    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout')
++    const ctx = await harness()
++    const sessionId = SessionId('pi-ai-agentless-session-owner')
++    const session = ctx.sessions.prepare(sessionId)
++    const disposeSession = ctx.sessions.enter(session)
++    ctx.sessions.announce(session)
++
++    expect((await run(ctx, sessionId)).at(-1)).toMatchObject({ type: 'finish' })
++    expect((await run(ctx, sessionId)).at(-1)).toMatchObject({ type: 'finish' })
++    expect(FakeCodexWebSocket.instances).toHaveLength(1)
++    expect(FakeCodexWebSocket.instances[0]?.sent).toHaveLength(2)
++    expect(FakeCodexWebSocket.instances[0]?.closes).toEqual([])
++    const idleTimer = idleTimerFrom(setTimeoutSpy)
++
++    disposeSession()
++
++    expect(clearTimeoutSpy).toHaveBeenCalledWith(idleTimer)
++    expect(FakeCodexWebSocket.instances[0]?.closes).toEqual([
++      { code: 1000, reason: 'debug_close' },
++    ])
++    await ctx.fiber.dispose()
++  })
++
++  it('contains aggregate cleanup failure after pi-ai still closes the transport', async () => {
++    const ctx = await harness()
++    const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => undefined)
++    const sessionId = SessionId('pi-ai-cleanup-failure-owner')
++    const owner = await ctx.agents.create({
++      sessionId,
++      agentOptions: { provider: 'openai-codex', model: 'gpt-5.4' },
++    })
++    const unregisterFailure = registerSessionResourceCleanup(() => {
++      throw new Error('test cleanup failure')
++    })
++    try {
++      expect((await run(ctx, sessionId)).at(-1)).toMatchObject({ type: 'finish' })
++
++      await expect(owner.dispose()).resolves.toBeUndefined()
++
++      expect(FakeCodexWebSocket.instances[0]?.closes).toEqual([
++        { code: 1000, reason: 'debug_close' },
++      ])
++      expect(warn).toHaveBeenCalledWith(
++        `llm-pi-ai: cleanup failed for session "${sessionId}": AggregateError: Failed to cleanup session resources`,
++      )
++    } finally {
++      unregisterFailure()
++    }
++  })
++
++  it('survives concurrent listener-fiber unload during nested-owner root disposal', async () => {
++    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
++    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout')
++    const ctx = await harness()
++    const sessionId = SessionId('pi-ai-root-disposal-owner')
++    let creating!: ReturnType<typeof ctx.agents.create>
++    await ctx.plugin(Object.assign((ownerCtx: Context) => {
++      creating = ownerCtx.agents.create({
++        sessionId,
++        agentOptions: { provider: 'openai-codex', model: 'gpt-5.4' },
++      })
++    }, { inject: ['agents'] }))
++    await creating
++
++    expect((await run(ctx, sessionId)).at(-1)).toMatchObject({ type: 'finish' })
++    expect((await run(ctx, sessionId)).at(-1)).toMatchObject({ type: 'finish' })
++    expect(FakeCodexWebSocket.instances).toHaveLength(1)
++    expect(FakeCodexWebSocket.instances[0]?.sent).toHaveLength(2)
++    expect(FakeCodexWebSocket.instances[0]?.closes).toEqual([])
++    const idleTimer = idleTimerFrom(setTimeoutSpy)
++
++    await ctx.fiber.dispose()
++
++    expect(clearTimeoutSpy).toHaveBeenCalledWith(idleTimer)
++    expect(FakeCodexWebSocket.instances[0]?.closes).toEqual([
++      { code: 1000, reason: 'debug_close' },
++    ])
++  })
++})

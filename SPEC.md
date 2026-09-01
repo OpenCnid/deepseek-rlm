@@ -452,7 +452,7 @@ The latest valid snapshot event plus its digest is authoritative. An orphan file
 
 ## 14. Required DeepSeek Harness seam additions
 
-The current preview requires two generic changes to DeepSeek Harness. They MUST be implemented as upstream-quality patches with tests and kept narrow enough to propose upstream. Alpha.3 already supplies persisted per-child reasoning effort natively.
+The current preview requires two generic RLM capability changes to DeepSeek Harness. They MUST be implemented as upstream-quality patches with tests and kept narrow enough to propose upstream. Alpha.3 already supplies persisted per-child reasoning effort natively. The separate provider/CLI lifecycle compatibility requirements in section 14.3 do not expand the RLM capability seam.
 
 ### 14.1 Durable continuable-child deletion
 
@@ -475,6 +475,22 @@ Add a public `Session.appendIgnorable()` operation for typed, non-surface inform
 Alpha.3's native agent/subagent vocabulary accepts a selected `ReasoningEffortId` before the child's first request, persists it in the continuable descriptor, restores it on cold resume, and applies it through model selection. The plugin MUST still validate the value against `ctx.llm.resolveModelInfo()` before child admission. Installing an `agent/request` listener after `startContinuable()` returns remains racy and forbidden.
 
 If deletion support is absent, `rlm.delete_subagent` MUST fail with the stable unsupported-capability error. If the ignorable-event writer is absent, the provider MUST fail before recording snapshot authority through a weaker or live-only path.
+
+### 14.3 Pinned provider and CLI lifecycle compatibility
+
+The pinned DSH/pi-ai combination MUST release session-scoped provider resources
+when their exact owning `Agent` is disposed. Resource ownership MUST be claimed
+at actual stream use so inactive adapters allocate nothing, and agentless
+callers MUST fall back to exact `Session` ownership rather than a matching ID
+string. Cleanup MUST use pi-ai's public session-resource API, run after the
+Agent loop quiesces, and contain aggregate cleanup errors without skipping
+other owners.
+
+After full application-tree disposal, the CLI's existing force-exit deadline
+MUST remain armed but unreferenced. A quiescent process therefore exits without
+waiting for the deadline, while a transport whose public close leaves a
+referenced OS handle cannot keep a completed headless command alive
+indefinitely. The bound MUST NOT bypass or race application-tree disposal.
 
 ## 15. Configuration
 

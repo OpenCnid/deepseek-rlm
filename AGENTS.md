@@ -80,9 +80,10 @@ isolated five-tarball smoke install succeeds.
   Agent to `f8f0036`. Do not widen or move one pin without a full audit.
 - Treat the DSH package set as atomic. Registry copies in a profile can split
   service symbols and shadow patched host seams.
-- Apply the two DSH patches in filename order. If a capability is missing,
-  fail with its stable unsupported error; do not add a private-state or
-  live-only fallback.
+- Apply all DSH patches in filename order. Patches `0002` and `0003` are the
+  two required RLM capability seams; `0004` and `0005` are generic pi-ai/CLI
+  lifecycle fixes. If a capability is missing, fail with its stable unsupported
+  error; do not add a private-state or live-only fallback.
 - Do not hand-edit `vendor/prime-agent-runtime`. An upstream change requires a
   new audited pin, license review, file-digest regeneration, Python lock update,
   and upstream tests.

@@ -31,11 +31,17 @@ Apply the patches in filename order to the exact revision above:
 ```sh
 git -C /path/to/deepseek-harness apply /path/to/deepseek-rlm/patches/deepseek-harness/0002-continuable-child-deletion.patch
 git -C /path/to/deepseek-harness apply /path/to/deepseek-rlm/patches/deepseek-harness/0003-public-ignorable-session-events.patch
+git -C /path/to/deepseek-harness apply /path/to/deepseek-rlm/patches/deepseek-harness/0004-pi-ai-agent-session-cleanup.patch
+git -C /path/to/deepseek-harness apply /path/to/deepseek-rlm/patches/deepseek-harness/0005-bounded-process-shutdown.patch
 ```
 
 DSH alpha.3 natively provides validated, persisted per-child reasoning. Patch
-2 provides public durable child deletion. Patch 3 makes independently defined `rlm/*`
-informational events safe for cold reads. Missing patches produce explicit
+2 provides public durable child deletion. Patch 3 makes independently defined
+`rlm/*` informational events safe for cold reads. Those are the two RLM
+capability seams. Patch 4 releases pi-ai's provider session resources with the
+exact owning Agent or agentless Session. Patch 5 preserves DSH's bounded CLI
+exit after the application tree is disposed if a transport still owns a
+referenced OS handle. Missing capability patches produce explicit
 unsupported-capability errors; the plugin does not substitute a weaker path.
 
 Verify the series against a disposable checkout when changing either side:
@@ -64,21 +70,27 @@ copies of those host packages into the profile.
 
 ## 4. Point internal edges at the local tarballs
 
-The preview package names are not published. Add `pnpm.overrides` to
-`$DSH_HOME/profiles/<profile>/package.json`, using absolute `file:` URLs for the
-four internal package edges:
+The preview package names are not published. pnpm 11 reads overrides and build
+approvals from `$DSH_HOME/profiles/<profile>/pnpm-workspace.yaml`, not from the
+`pnpm` field in `package.json`. Keep the generated linker settings, approve the
+audited ZeroMQ native build, and add absolute `file:` URLs for the four internal
+package edges:
 
-```json
-{
-  "pnpm": {
-    "overrides": {
-      "@deepseek-rlm/dsh-rlm": "file:D:/deepseek-rlm/artifacts/packages/deepseek-rlm-dsh-rlm-0.1.0-preview.0.tgz",
-      "@deepseek-rlm/dsh-rlm-prime-runtime": "file:D:/deepseek-rlm/artifacts/packages/deepseek-rlm-dsh-rlm-prime-runtime-0.1.0-preview.0.tgz",
-      "@deepseek-rlm/dsh-rlm-jupyter": "file:D:/deepseek-rlm/artifacts/packages/deepseek-rlm-dsh-rlm-jupyter-0.1.0-preview.0.tgz",
-      "@deepseek-rlm/dsh-tool-ipython": "file:D:/deepseek-rlm/artifacts/packages/deepseek-rlm-dsh-tool-ipython-0.1.0-preview.0.tgz"
-    }
-  }
-}
+```yaml
+packages:
+  - .
+
+nodeLinker: hoisted
+autoInstallPeers: false
+
+allowBuilds:
+  zeromq: true
+
+overrides:
+  '@deepseek-rlm/dsh-rlm': file:D:/deepseek-rlm/artifacts/packages/deepseek-rlm-dsh-rlm-0.1.0-preview.0.tgz
+  '@deepseek-rlm/dsh-rlm-prime-runtime': file:D:/deepseek-rlm/artifacts/packages/deepseek-rlm-dsh-rlm-prime-runtime-0.1.0-preview.0.tgz
+  '@deepseek-rlm/dsh-rlm-jupyter': file:D:/deepseek-rlm/artifacts/packages/deepseek-rlm-dsh-rlm-jupyter-0.1.0-preview.0.tgz
+  '@deepseek-rlm/dsh-tool-ipython': file:D:/deepseek-rlm/artifacts/packages/deepseek-rlm-dsh-tool-ipython-0.1.0-preview.0.tgz
 ```
 
 Use forward slashes in Windows `file:` URLs. On macOS or Linux, use an absolute
@@ -86,16 +98,21 @@ URL such as `file:/home/user/deepseek-rlm/artifacts/packages/...tgz`.
 
 ## 5. Configure runtime roots
 
-Merge the rows from
-[`packages/bundle/example.cordis.yml`](../packages/bundle/example.cordis.yml)
-into the profile's `cordis.patch.yml`. At minimum, replace these absolute
-paths:
+Installing the bundle activates its three Loader rows. Override the existing
+`rlm-jupyter` row by id in the profile's `cordis.patch.yml`; do not insert a
+second copy of the rows from
+[`packages/bundle/example.cordis.yml`](../packages/bundle/example.cordis.yml).
+At minimum, set these absolute paths:
 
 ```yaml
-config:
-  artifactRoot: D:/dsh-state/rlm-artifacts
-  managedRuntimeRoot: D:/dsh-state/rlm-runtime
+- id: rlm-jupyter
+  config:
+    artifactRoot: D:/dsh-state/rlm-artifacts
+    managedRuntimeRoot: D:/dsh-state/rlm-runtime
 ```
+
+The example patch is for a composition that is not installing the bundle and
+therefore needs to insert all three rows itself.
 
 The default composition uses `rlm-spawn`, `maxDepth: 1`, snapshots after each
 cell, and no Python-to-DSH tools adapter. The spawn-provider wrapper publishes
@@ -148,6 +165,9 @@ Then admit a child with `await rlm(...)` and require it to report through
   roots are writable, and Python 3.11 can be installed. A custom Python must be
   absolute and import `ipykernel`, `dill`, `nest_asyncio`, `rlm`, and
   `dsh_rlm_runtime`.
+- **`ERR_PNPM_IGNORED_BUILDS` for ZeroMQ:** set `allowBuilds.zeromq: true` in
+  the profile's `pnpm-workspace.yaml`, then rerun `dsh plugin --profile
+<profile> install`.
 - **`%%bash` on Windows:** configure an absolute Git Bash, Cygwin, or compatible
   executable using `shellPath`.
 - **Snapshot restore diagnostic:** the event/file digest pair is authoritative.
@@ -155,6 +175,10 @@ Then admit a child with `await rlm(...)` and require it to report through
 - **Missing spawn provider:** confirm the bundle row is enabled. The Jupyter row
   deliberately fails startup rather than racing or substituting another
   backend.
+- **Headless output completes but the process stays open:** confirm patches 4
+  and 5 are applied. Patch 4 requests public pi-ai session cleanup; patch 5
+  retains the five-second post-disposal backstop for a WebSocket whose close
+  handshake leaves a referenced transport handle.
 
 ## Upgrade policy
 

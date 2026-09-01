@@ -61,7 +61,7 @@ The following gates passed from a cleanly installed plugin workspace:
   - installed them into an isolated pnpm 11 project;
   - imported every public package entry point successfully.
 
-The two patches were also applied to a checkout at the exact DSH commit. The
+The two RLM capability patches were also applied to a checkout at the exact DSH commit. The
 upstream host build and client contract type check passed, followed by 251
 passing targeted upstream tests:
 

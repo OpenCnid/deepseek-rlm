@@ -24,7 +24,7 @@ sessions, policy, lineage, cancellation, and persistence.
 > bundle for DeepSeek Harness—not another harness and not a DeepSeek model.
 
 > [!IMPORTANT]
-> This preview targets the exact DSH `0.1.2-alpha.3` baseline and requires two
+> This preview targets the exact DSH `0.1.2-alpha.3` baseline and requires four
 > ordered host patches. The packages are not published; install the local
 > tarballs using the [installation guide](docs/INSTALL.md).
 
@@ -53,14 +53,14 @@ an LLM provider from Python, or runs a second agent loop.
 
 ## Compatibility
 
-| Component           | Supported baseline                                        |
-| ------------------- | --------------------------------------------------------- |
-| DeepSeek Harness    | `dsh-v0.1.2-alpha.3` / `dd6322d` plus two bundled patches |
-| Cordis              | `4.0.2`                                                   |
-| Node.js             | `^22.19` or `>=24`                                        |
-| Package manager     | pnpm `11.7.0`                                             |
-| Managed Python      | Python `3.11` through `uv`                                |
-| Prime Agent runtime | vendored pin `f8f0036`                                    |
+| Component           | Supported baseline                                         |
+| ------------------- | ---------------------------------------------------------- |
+| DeepSeek Harness    | `dsh-v0.1.2-alpha.3` / `dd6322d` plus four bundled patches |
+| Cordis              | `4.0.2`                                                    |
+| Node.js             | `^22.19` or `>=24`                                         |
+| Package manager     | pnpm `11.7.0`                                              |
+| Managed Python      | Python `3.11` through `uv`                                 |
+| Prime Agent runtime | vendored pin `f8f0036`                                     |
 
 The DSH packages move as one audited set. Do not mix registry copies or another
 pre-release into the profile.
@@ -76,7 +76,7 @@ pnpm install --frozen-lockfile
 pnpm package:bundle
 ```
 
-Apply the two patches under `patches/deepseek-harness/` to the exact pinned
+Apply the four patches under `patches/deepseek-harness/` to the exact pinned
 DSH checkout, configure the generated tarballs as profile-local overrides, and
 install the bundle:
 

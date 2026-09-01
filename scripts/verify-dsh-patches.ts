@@ -10,6 +10,8 @@ const revision = 'dd6322d604e00eec1ba5e0c8541159906a21094a'
 const names = [
   '0002-continuable-child-deletion.patch',
   '0003-public-ignorable-session-events.patch',
+  '0004-pi-ai-agent-session-cleanup.patch',
+  '0005-bounded-process-shutdown.patch',
 ]
 const paths = names.map((name) => resolve(root, 'patches/deepseek-harness', name))
 
